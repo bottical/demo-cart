@@ -127,6 +127,18 @@
         const normalizeJan = (jan) => {
             return stateMgr.normalizeJanValue(jan);
         };
+        const normalizeText = (value) => String(value ?? '').replace(/^[\s　]+|[\s　]+$/g, '');
+        const buildProductLabel = ({ label, productCode, productName }) => {
+            const safeLabel = normalizeText(label);
+            const safeCode = normalizeText(productCode);
+            const safeName = normalizeText(productName);
+            if (safeLabel) return safeLabel;
+            if (safeCode && safeName) return `${safeCode} / ${safeName}`;
+            if (safeCode) return safeCode;
+            if (safeName) return safeName;
+            return '';
+        };
+        const getProductInfo = (state, jan) => state?.productInfo?.[jan] || {};
         let lastAcceptedJan = null;
         let lastAcceptedAt = 0;
 
@@ -373,6 +385,16 @@
                 scanInput.parentElement.style.opacity = '0.5';
 
                 const totalQty = state.injectList?.[pending.jan] || 0;
+                const productLabel = normalizeText(getProductInfo(state, pending.jan).productLabel);
+                const dashProductBlock = document.getElementById('dashProductBlock');
+                const dashProductLabel = document.getElementById('dashProductLabel');
+                if (productLabel) {
+                    dashProductLabel.textContent = productLabel;
+                    dashProductBlock.classList.remove('hidden');
+                } else {
+                    dashProductLabel.textContent = '';
+                    dashProductBlock.classList.add('hidden');
+                }
                 document.getElementById('dashJan').textContent = pending.jan;
                 document.getElementById('dashQty').textContent = totalQty;
                 scanMsg.classList.add('hidden');
@@ -639,6 +661,9 @@
         const csvColPick = document.getElementById('csvColPick');
         const csvColJan = document.getElementById('csvColJan');
         const csvColQty = document.getElementById('csvColQty');
+        const csvColLabel = document.getElementById('csvColLabel');
+        const csvColProductCode = document.getElementById('csvColProductCode');
+        const csvColProductName = document.getElementById('csvColProductName');
 
         const getSavedCsvFormat = () => {
             if (stateMgr.user && stateMgr.user.uid) {
@@ -647,7 +672,7 @@
                     try { return JSON.parse(saved); } catch (e) {}
                 }
             }
-            return stateMgr.state?.config?.csvFormat || { skipHeader: true, pickCol: 1, janCol: 2, qtyCol: 3 };
+            return stateMgr.state?.config?.csvFormat || { skipHeader: true, pickCol: 1, janCol: 2, qtyCol: 3, labelCol: null, productCodeCol: null, productNameCol: null };
         };
 
         const saveCsvFormat = (format) => {
@@ -664,6 +689,9 @@
             csvColPick.value = format.pickCol;
             csvColJan.value = format.janCol;
             csvColQty.value = format.qtyCol;
+            csvColLabel.value = format.labelCol || '';
+            csvColProductCode.value = format.productCodeCol || '';
+            csvColProductName.value = format.productNameCol || '';
             csvConfigModal.classList.remove('hidden');
         });
 
@@ -676,7 +704,10 @@
                 skipHeader: csvSkipHeader.checked,
                 pickCol: parseInt(csvColPick.value, 10) || 1,
                 janCol: parseInt(csvColJan.value, 10) || 2,
-                qtyCol: parseInt(csvColQty.value, 10) || 3
+                qtyCol: parseInt(csvColQty.value, 10) || 3,
+                labelCol: parseInt(csvColLabel.value, 10) || null,
+                productCodeCol: parseInt(csvColProductCode.value, 10) || null,
+                productNameCol: parseInt(csvColProductName.value, 10) || null
             };
             saveCsvFormat(format);
             csvConfigModal.classList.add('hidden');
@@ -687,9 +718,14 @@
             const idxPick = format.pickCol - 1;
             const idxJan = format.janCol - 1;
             const idxQty = format.qtyCol - 1;
+            const idxLabel = format.labelCol ? format.labelCol - 1 : null;
+            const idxProductCode = format.productCodeCol ? format.productCodeCol - 1 : null;
+            const idxProductName = format.productNameCol ? format.productNameCol - 1 : null;
             const targetRows = format.skipHeader ? rows.slice(1) : rows;
 
             const aggregatedInject = {};
+            const productInfo = {};
+            const labelVariantsByJan = {};
             const groupedPick = {};
 
             targetRows.forEach((row) => {
@@ -703,19 +739,34 @@
                 const jan = normalizeJan(String(parts[idxJan] ?? '').trim());
                 const qtyRaw = String(parts[idxQty] ?? '').trim();
                 const qty = parseInt(qtyRaw, 10) || 0;
+                const productCode = idxProductCode !== null ? normalizeText(parts[idxProductCode]) : '';
+                const productName = idxProductName !== null ? normalizeText(parts[idxProductName]) : '';
+                const productLabel = buildProductLabel({
+                    label: idxLabel !== null ? parts[idxLabel] : '',
+                    productCode,
+                    productName
+                });
 
                 if (!jan || !pickNo) return;
 
                 // Aggregate for Injection validation
                 aggregatedInject[jan] = (aggregatedInject[jan] || 0) + qty;
+                if (!productInfo[jan] || (!productInfo[jan].productLabel && productLabel)) {
+                    productInfo[jan] = { jan, productLabel, productCode, productName };
+                }
+                if (productLabel) {
+                    if (!labelVariantsByJan[jan]) labelVariantsByJan[jan] = new Set();
+                    labelVariantsByJan[jan].add(productLabel);
+                }
 
                 // Group for Picking Lists
                 if (!groupedPick[pickNo]) groupedPick[pickNo] = [];
-                groupedPick[pickNo].push({ jan, qty, checkedQty: 0, status: 'PENDING' });
+                groupedPick[pickNo].push({ jan, qty, checkedQty: 0, status: 'PENDING', productLabel, productCode, productName });
             });
 
             const updates = {
                 injectList: aggregatedInject,
+                productInfo,
                 pickListSource: {
                     fileName: sourceFile?.name || null,
                     fileType: sourceFile?.type || '',
@@ -738,7 +789,15 @@
             try {
                 await stateMgr.replaceAllPickLists(groupedPick);
                 await stateMgr.update(updates);
-                alert(`${Object.keys(aggregatedInject).length} 品目のデータを読み込みました。\nピッキングリスト: ${Object.keys(groupedPick).length} 件`);
+                const labelWarnings = Object.entries(labelVariantsByJan)
+                    .filter(([, labels]) => labels.size > 1)
+                    .map(([jan, labels]) => `同一JANに複数の商品表示名があります。\nJAN: ${jan}\n${Array.from(labels).map(label => `- ${label}`).join('\n')}\n\n現在仕様ではJAN単位で集約されます。CSV内容を確認してください。`);
+                const warningText = labelWarnings.length ? `\n\n警告:\n${labelWarnings.join('\n\n')}` : '';
+                if (labelWarnings.length) {
+                    console.warn('[inject] 同一JANに複数の商品表示名があります', labelWarnings);
+                    showMessage(`⚠️ 同一JANに複数の商品表示名があります。CSV内容を確認してください。対象: ${labelWarnings.length} JAN`, 'error');
+                }
+                alert(`${Object.keys(aggregatedInject).length} 品目のデータを読み込みました。\nピッキングリスト: ${Object.keys(groupedPick).length} 件${warningText}`);
             } catch (e) {
                 console.error('インポートデータの保存に失敗しました:', e);
                 alert('インポートデータの保存に失敗しました。通信状態をご確認ください。');

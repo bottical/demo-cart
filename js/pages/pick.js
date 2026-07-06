@@ -16,6 +16,7 @@
 
         let lastRenderedPickingNo = null;
         let lastRenderedAllCompleted = false;
+        const escapeHtml = (value) => String(value ?? '').replace(/[&<>\"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[ch]));
 
         const perf = window.__shelflowPerf;
         let renderCountWindow = { startedAt: performance.now(), count: 0, lastCountPerSec: 0 };
@@ -427,6 +428,7 @@
                 const subId = location.includes('-') ? location.split('-')[1] : null;
                 const { qty, checkedQty, done } = getLineProgress(line);
                 const statusLabel = getStatusLabel(line);
+                const productLabel = String(line.productLabel || state.productInfo?.[line.jan]?.productLabel || '').replace(/^[\s　]+|[\s　]+$/g, '');
 
                 const tr = document.createElement('tr');
                 const isOptimistic = !!optimisticLineOps[String(idx)];
@@ -435,7 +437,10 @@
                 if (done) tr.style.background = '#f8fafc';
 
                 tr.innerHTML = `
-                    <td style="padding:1rem; font-weight:600;">...${line.jan.slice(-4)}</td>
+                    <td style="padding:1rem; font-weight:600;">
+                        ${productLabel ? `<div style="max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(productLabel)}</div>` : ''}
+                        <div style="font-family:monospace; ${productLabel ? 'font-size:0.85rem; color:#64748b;' : ''}">...${line.jan.slice(-4)}</div>
+                    </td>
                     <td style="padding:1rem; font-size:1.25rem; font-weight:800;">${cfg.pickMode === 'VERIFY' ? `${checkedQty} / ${qty}` : qty}</td>
                     <td style="padding:1rem;">
                         <span style="padding:0.25rem 0.75rem; border-radius:4px; font-weight:800; font-size:1.5rem; color:white; background:${subId ? `hsl(${(subId - 1) * 60 + 200}, 70%, 50%)` : '#eab308'}">

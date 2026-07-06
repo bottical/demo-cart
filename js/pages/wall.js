@@ -746,11 +746,16 @@
             return deviceSettings.denseTextMode !== false && splitCount >= 5;
         };
 
-        const renderStackedBlock = (blockEl, labelText, qtyText) => {
+        const escapeHtml = (value) => String(value ?? '').replace(/[&<>\"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[ch]));
+        const normalizeDisplayText = (value) => String(value ?? '').replace(/^[\s　]+|[\s　]+$/g, '');
+        const getProductLabel = (state, jan) => normalizeDisplayText(state?.productInfo?.[jan]?.productLabel);
+
+        const renderStackedBlock = (blockEl, labelText, qtyText, subLabel = '') => {
             blockEl.innerHTML = `
                 <div class="block-content">
-                    <span class="block-main-label">${labelText || ''}</span>
-                    <span class="block-qty">${qtyText || ''}</span>
+                    <span class="block-main-label">${escapeHtml(labelText || '')}</span>
+                    ${subLabel ? `<span class="block-sub-label">${escapeHtml(subLabel)}</span>` : ''}
+                    <span class="block-qty">${escapeHtml(qtyText || '')}</span>
                 </div>
             `;
         };
@@ -770,16 +775,17 @@
                 .sort((a, b) => a.localeCompare(b))
                 .map(jan => ({
                     jan,
-                    qty: Number(injectList[jan]) || 0
+                    qty: Number(injectList[jan]) || 0,
+                    productLabel: getProductLabel(state, jan)
                 }));
         };
 
         const renderPickBlock = (blockEl, primaryText, qtyText, subLabel = '') => {
             blockEl.innerHTML = `
                 <div class="block-content">
-                    <span class="block-main-label">${primaryText || ''}</span>
-                    ${subLabel ? `<span class="block-sub-label">${subLabel}</span>` : ''}
-                    <span class="block-qty">${qtyText || ''}</span>
+                    <span class="block-main-label">${escapeHtml(primaryText || '')}</span>
+                    ${subLabel ? `<span class="block-sub-label">${escapeHtml(subLabel)}</span>` : ''}
+                    <span class="block-qty">${escapeHtml(qtyText || '')}</span>
                 </div>
             `;
         };
@@ -808,8 +814,9 @@
             modal.style.background = '#1e293b';
             modal.style.padding = '2rem';
             modal.style.borderRadius = '12px';
-            modal.style.minWidth = '300px';
+            modal.style.width = 'min(420px, calc(100vw - 24px))';
             modal.style.maxWidth = '90%';
+            modal.style.boxSizing = 'border-box';
             modal.style.color = 'white';
 
             modal.innerHTML = `
@@ -824,6 +831,8 @@
             const listContainer = modal.querySelector('#skusList');
             skus.forEach(jan => {
                 const requiredQty = Number(state?.injectList?.[jan]) || 0;
+                const productLabel = getProductLabel(state, jan);
+                const janLabel = productLabel ? formatJanLast4(jan) : jan;
                 const item = document.createElement('div');
                 item.style.display = 'flex';
                 item.style.justifyContent = 'space-between';
@@ -833,9 +842,12 @@
                 item.style.borderRadius = '6px';
                 
                 item.innerHTML = `
-                    <span style="font-family:monospace; font-weight:700; flex:1;">${jan}</span>
-                    <span style="font-size:0.75rem; color:#94a3b8; width:72px; text-align:right; margin-right:0.75rem;">必要 ${requiredQty}</span>
-                    <button class="btn btn-danger remove-sku-btn" data-jan="${jan}" style="padding:0.25rem 0.75rem; font-size:0.8rem;">解除</button>
+                    <div style="display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; margin-right:0.75rem;">
+                        ${productLabel ? `<span style="font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(productLabel)}</span>` : ''}
+                        <span style="font-family:monospace; font-weight:700; color:${productLabel ? '#94a3b8' : 'white'}; font-size:${productLabel ? '0.8rem' : '1rem'}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(janLabel)}</span>
+                    </div>
+                    <span style="font-size:0.75rem; color:#94a3b8; flex:0 0 auto; text-align:right; margin-right:0.75rem;">必要 <strong style="color:white; font-size:1rem;">${escapeHtml(requiredQty)}</strong></span>
+                    <button class="btn btn-danger remove-sku-btn" data-jan="${escapeHtml(jan)}" style="padding:0.25rem 0.75rem; font-size:0.8rem; flex:0 0 auto;">解除</button>
                 `;
                 listContainer.appendChild(item);
             });
@@ -884,9 +896,10 @@
             modal.style.background = '#1e293b';
             modal.style.padding = '2rem';
             modal.style.borderRadius = '12px';
-            modal.style.minWidth = '320px';
+            modal.style.width = 'min(420px, calc(100vw - 24px))';
             modal.style.maxWidth = '90%';
             modal.style.maxHeight = '80vh';
+            modal.style.boxSizing = 'border-box';
             modal.style.color = 'white';
             modal.style.display = 'flex';
             modal.style.flexDirection = 'column';
@@ -906,7 +919,7 @@
             if (items.length === 0) {
                 listContainer.innerHTML = '<div style="color:#94a3b8; text-align:center; padding:0.5rem 0;">未割り当てSKUはありません</div>';
             } else {
-                items.forEach(({ jan, qty }) => {
+                items.forEach(({ jan, qty, productLabel }) => {
                     const row = document.createElement('div');
                     row.style.display = 'flex';
                     row.style.justifyContent = 'space-between';
@@ -914,14 +927,15 @@
                     row.style.background = '#334155';
                     row.style.padding = '0.75rem';
                     row.style.borderRadius = '6px';
+                    const janLabel = jan;
                     row.innerHTML = `
-                        <div style="display:flex; flex-direction:column; gap:2px;">
-                            <span style="font-size:0.72rem; color:#94a3b8; font-weight:700;">JAN</span>
-                            <span style="font-family:monospace; font-weight:700;">${jan}</span>
+                        <div style="display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; margin-right:0.75rem;">
+                            ${productLabel ? `<span style="font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(productLabel)}</span>` : '<span style="font-size:0.72rem; color:#94a3b8; font-weight:700;">JAN</span>'}
+                            <span style="font-family:monospace; font-weight:700; color:${productLabel ? '#94a3b8' : 'white'}; font-size:${productLabel ? '0.8rem' : '1rem'}; overflow:hidden; white-space:nowrap;">${escapeHtml(janLabel)}</span>
                         </div>
-                        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px;">
+                        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; flex:0 0 auto;">
                             <span style="font-size:0.72rem; color:#94a3b8; font-weight:700;">数量</span>
-                            <span style="font-weight:800;">${qty}</span>
+                            <span style="font-weight:900; font-size:1.1rem;">${escapeHtml(qty)}</span>
                         </div>
                     `;
                     listContainer.appendChild(row);
@@ -1296,8 +1310,10 @@
                     if (skus.length === 1) {
                         const jan = skus[0];
                         const totalQty = state.injectList?.[jan] || 0;
-                        const label = formatJanLast4(jan);
-                        renderStackedBlock(block, label, `${totalQty}`);
+                        const productLabel = getProductLabel(state, jan);
+                        const label = productLabel || formatJanLast4(jan);
+                        const subLabel = productLabel ? formatJanLast4(jan) : '';
+                        renderStackedBlock(block, label, `${totalQty}`, subLabel);
                     } else {
                         const totalQty = skus.reduce((sum, jan) => sum + (state.injectList?.[jan] || 0), 0);
                         renderStackedBlock(block, `${skus.length} SKU`, totalQty > 0 ? `${totalQty}` : '');
