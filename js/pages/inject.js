@@ -25,6 +25,33 @@
         let pendingSlotImportPreview = null;
 
 
+        const getValidBaysOrBlock = (state, messageTarget = bayGrid) => {
+            const totalBays = window.getValidConfiguredBays ? window.getValidConfiguredBays(state) : null;
+            if (totalBays === null) {
+                const error = stateMgr.globalLayoutSettingsLoadFailed
+                    ? '総間口数を取得できませんでした。<br>通信状態を確認して再読み込みしてください。<br>安全のため投入操作を停止しています。'
+                    : '間口設定を読み込んでいます。<br>このままお待ちください。';
+                if (messageTarget) messageTarget.innerHTML = `<div class="card" style="grid-column:1/-1; padding:2rem; text-align:center; color:var(--danger); font-weight:800;">${error}</div>`;
+                if (scanInput) scanInput.disabled = true;
+                if (loadCsvBtn) loadCsvBtn.disabled = true;
+                if (importSlotLayoutBtn) importSlotLayoutBtn.disabled = true;
+                return null;
+            }
+            if (scanInput) scanInput.disabled = false;
+            if (loadCsvBtn) loadCsvBtn.disabled = false;
+            if (importSlotLayoutBtn) importSlotLayoutBtn.disabled = false;
+            return totalBays;
+        };
+
+        const ensureBaysReady = () => {
+            const totalBays = window.getValidConfiguredBays ? window.getValidConfiguredBays(stateMgr.state) : null;
+            if (totalBays === null) {
+                alert('総間口数を取得できませんでした。通信状態を確認して再読み込みしてください。安全のため投入操作を停止しています。');
+                return null;
+            }
+            return totalBays;
+        };
+
         const perf = window.__shelflowPerf;
         let renderCountWindow = { startedAt: performance.now(), count: 0, lastCountPerSec: 0 };
         const countRender = (pageName) => {
@@ -509,7 +536,8 @@
         const render = (state) => {
             const renderStart = performance.now();
             countRender("inject");
-            const totalBays = state?.config?.bays || 9;
+            const totalBays = getValidBaysOrBlock(state);
+            if (totalBays === null) return;
             const pendingJan = stateMgr.getEffectiveInjectPendingForCurrentUser(state)?.jan || null;
             perf?.mark("inject.render.start", {
                 mode: state?.mode || null,
@@ -622,7 +650,7 @@
                 
                 // Count SKUs in injectList that are NOT in slots
                 const unallocatedCount = Object.keys(injectList).filter(jan => !allocatedSkus.has(jan)).length;
-                const nextBayNo = (state.config?.bays || 9) + 1;
+                const nextBayNo = totalBays + 1;
 
                 bay10Container.innerHTML = `
                     <div class="card" style="background: #f8fafc; border: 2px dashed #cbd5e1; text-align: center; padding: 1.5rem;">
@@ -679,8 +707,7 @@
             if (stateMgr.user && stateMgr.user.uid) {
                 localStorage.setItem(`csvFormat_${stateMgr.user.uid}`, JSON.stringify(format));
             }
-            const currentConfig = stateMgr.state?.config || {};
-            stateMgr.update({ config: { ...currentConfig, csvFormat: format } });
+            stateMgr.update({ 'config.csvFormat': format });
         };
 
         csvConfigBtn.addEventListener('click', () => {
@@ -777,7 +804,8 @@
             const currentSplits = stateMgr.state?.splits || {};
             const newSplits = { ...currentSplits };
             let needInit = false;
-            const totalBays = stateMgr.state?.config?.bays || 9;
+            const totalBays = ensureBaysReady();
+            if (totalBays === null) return;
             for (let b = 1; b <= totalBays; b++) {
                 if (newSplits[b] === undefined) {
                     newSplits[b] = 1;
@@ -805,6 +833,7 @@
         };
 
         loadCsvBtn.addEventListener('click', () => {
+            if (ensureBaysReady() === null) return;
             const file = document.getElementById('csvFile').files[0];
             if (!file) return alert("ファイルを選択してください");
 

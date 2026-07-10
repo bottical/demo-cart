@@ -38,6 +38,27 @@ window.__shelflowPerf = window.__shelflowPerf || {
     }
 };
 
+
+function getValidConfiguredBays(state) {
+    const bays = Number(state?.config?.bays);
+    if (!Number.isInteger(bays) || bays < 1 || bays > 100) {
+        return null;
+    }
+    return bays;
+}
+
+function countAssignedSkus(slots) {
+    return Object.values(slots || {}).reduce((count, slot) => {
+        if (!slot) return count;
+        if (Array.isArray(slot.skus)) return count + slot.skus.length;
+        if (slot.sku) return count + 1;
+        return count;
+    }, 0);
+}
+
+window.getValidConfiguredBays = window.getValidConfiguredBays || getValidConfiguredBays;
+window.countAssignedSkus = window.countAssignedSkus || countAssignedSkus;
+
 function StateManager(onStateChange, onUserChange) {
     this.onStateChange = onStateChange;
     this.onUserChange = onUserChange;
@@ -57,6 +78,8 @@ function StateManager(onStateChange, onUserChange) {
     this.progressCountedBackfillCompleted = false;
     this.progressCountedBackfillFailed = false;
     this.globalLayoutSettingsLoadFailed = false;
+    this.stateDocumentLoading = true;
+    this.lastStateIntegrity = null;
 
     if (!firebase.apps.length) {
         firebase.initializeApp(firebaseConfig);
@@ -808,8 +831,20 @@ StateManager.prototype.subscribeToState = function (uid) {
         const perf = window.__shelflowPerf;
         const snapStart = performance.now();
         perf?.mark('state.snapshot.start', { uid, currentUserId: this.currentUserId });
+        const metadata = doc.metadata || {};
+        const data = doc.exists ? doc.data() : null;
+        console.info('[layout-state]', {
+            exists: doc.exists,
+            fromCache: !!metadata.fromCache,
+            hasPendingWrites: !!metadata.hasPendingWrites,
+            bays: data?.config?.bays ?? null,
+            updatedAt: data?.updatedAt ?? null,
+            page: location.pathname,
+            at: Date.now()
+        });
+        this._logStateIntegrity(data, metadata);
         if (doc.exists) {
-            const data = doc.data();
+            this.stateDocumentLoading = false;
             this.globalLayoutSettingsLoadFailed = false;
             this._cacheWallGlobalSettings(uid, data?.config || null);
             let approxSize = null;
@@ -848,7 +883,16 @@ StateManager.prototype.subscribeToState = function (uid) {
                 });
             }
         } else {
-            this.initializeNewSession(uid);
+            this.stateDocumentLoading = true;
+            this.globalLayoutSettingsLoadFailed = true;
+            if (metadata.fromCache || metadata.hasPendingWrites || !navigator.onLine) {
+                console.warn('[layout-state] state document missing from cache/offline; waiting for server snapshot');
+                if (this.onStateChange && this.state) this.onStateChange(this.state);
+            } else {
+                this.initializeNewSession(uid, { requireServerConfirmedMissing: true, sourcePage: location.pathname }).then((result) => {
+                    console.info('[layout-state] initialize checked', result);
+                }).catch((error) => this._logFirestoreError('initializeNewSession', error, uid));
+            }
         }
         perf?.mark('state.snapshot.end', {
             durationMs: Math.round(performance.now() - snapStart),
@@ -1079,7 +1123,7 @@ StateManager.prototype._buildJanIndexFromSlots = function (slots) {
     return janIndex;
 };
 
-StateManager.prototype.replaceSlotLayout = function (nextSlots) {
+StateManager.prototype.replaceSlotLayout = async function (nextSlots) {
     if (!this.user || !this.state) return Promise.reject("Not authenticated");
     const uid = this.user.uid;
     const currentUserId = this.currentUserId;
@@ -1095,6 +1139,7 @@ StateManager.prototype.replaceSlotLayout = function (nextSlots) {
         normalizedSlots[slotKey] = { skus: [...skus] };
     });
     const nextJanIndex = this._buildJanIndexFromSlots(normalizedSlots);
+    await this.createStateBackup('before-slot-layout-replace');
 
     return this.db.runTransaction(async (transaction) => {
         const docRef = this._getStateDocRef(uid);
@@ -1103,6 +1148,17 @@ StateManager.prototype.replaceSlotLayout = function (nextSlots) {
             throw new Error('state-not-found');
         }
         const data = doc.data() || {};
+        const beforeAssignedCount = countAssignedSkus(data.slots || {});
+        const afterAssignedCount = countAssignedSkus(normalizedSlots);
+        if (beforeAssignedCount > 0 && afterAssignedCount === 0) {
+            throw new Error('slot-layout-replace-would-clear-all-assigned-skus');
+        }
+        if (beforeAssignedCount > 0 && afterAssignedCount < beforeAssignedCount) {
+            console.warn('[state-integrity] slot layout import decreases assigned SKU count', {
+                beforeAssignedCount,
+                afterAssignedCount
+            });
+        }
         const userStates = data.userStates || {};
         const updates = {
             slots: normalizedSlots,
@@ -1169,7 +1225,7 @@ StateManager.prototype._migrateLegacyPickListsIfNeeded = function (uid, data) {
     });
 };
 
-StateManager.prototype.initializeNewSession = function (uid) {
+StateManager.prototype._buildInitialState = function () {
     const defaultConfig = {
         bays: null,
         maxSplit: 6,
@@ -1181,31 +1237,14 @@ StateManager.prototype.initializeNewSession = function (uid) {
         pickMode: 'NORMAL',
         quantityVerification: false
     };
-
-    const sourceConfig = this.state?.config || {};
-    const { multiStartId: _legacyMultiStartId, ...sourceConfigWithoutLegacy } = sourceConfig;
-    const config = {
-        ...defaultConfig,
-        ...sourceConfigWithoutLegacy
-    };
-
-    const totalBays = config.bays || 0;
-    const splits = {};
-    for (let b = 1; b <= totalBays; b++) {
-        splits[b] = this.state?.splits?.[b] || 1;
-    }
-
-    const initialState = {
+    return {
         mode: 'INJECT',
-        config,
+        config: defaultConfig,
         slots: {},
-        splits,
+        splits: {},
         injectList: {},
         janIndex: {},
-        progressSummary: {
-            total: 0,
-            completed: 0
-        },
+        progressSummary: { total: 0, completed: 0 },
         userStates: {
             user1: { activePick: {}, currentPickingNo: null, injectPending: null, duplicateHighlight: null },
             user2: { activePick: {}, currentPickingNo: null, injectPending: null, duplicateHighlight: null },
@@ -1214,10 +1253,132 @@ StateManager.prototype.initializeNewSession = function (uid) {
         },
         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     };
-    return this._getStateDocRef(uid).set(initialState).catch((error) => {
+};
+
+StateManager.prototype.initializeNewSession = function (uid, options = {}) {
+    if (!navigator.onLine) return Promise.reject(new Error('オフライン中は状態を初期化しません。'));
+    const docRef = this._getStateDocRef(uid);
+    const initialState = this._buildInitialState();
+    return this.db.runTransaction(async (transaction) => {
+        const snapshot = await transaction.get(docRef);
+        if (snapshot.exists) return { created: false, reason: 'already-exists' };
+        transaction.create(docRef, initialState);
+        return { created: true };
+    }).catch((error) => {
         this._logFirestoreError('initializeNewSession', error, uid);
         throw error;
     });
+};
+
+StateManager.prototype.createStateBackup = async function (reason, operationId) {
+    if (!this.user) throw new Error('Not authenticated');
+    const uid = this.user.uid;
+    const opId = operationId || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const snap = await this._getStateDocRef(uid).get({ source: 'server' });
+    if (!snap.exists) throw new Error('バックアップ対象の状態が存在しません。');
+    const state = snap.data() || {};
+    await this._getStateDocRef(uid).collection('stateBackups').doc(opId).set({
+        reason,
+        sourcePage: location.pathname,
+        operationId: opId,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        createdByUid: uid,
+        userAgent: navigator.userAgent,
+        config: state.config || {},
+        slots: state.slots || {},
+        splits: state.splits || {},
+        injectList: state.injectList || {},
+        janIndex: state.janIndex || {},
+        productInfo: state.productInfo || {},
+        userStates: state.userStates || {},
+        progressSummary: state.progressSummary || {},
+        pickListSource: state.pickListSource || null
+    });
+    return opId;
+};
+
+StateManager.prototype.updateConfiguredBays = async function (nextBays) {
+    if (!this.user) throw new Error('Not authenticated');
+    nextBays = Number(nextBays);
+    if (!Number.isInteger(nextBays) || nextBays < 1 || nextBays > 100) throw new Error('総間口数が不正です。');
+    const uid = this.user.uid;
+    const operationId = await this.createStateBackup('before-bays-change');
+    const docRef = this._getStateDocRef(uid);
+    await this.db.runTransaction(async (transaction) => {
+        const snap = await transaction.get(docRef);
+        if (!snap.exists) throw new Error('状態が存在しません。');
+        const data = snap.data() || {};
+        const previousBays = getValidConfiguredBays(data);
+        const audit = { previousBays, nextBays, changedAt: firebase.firestore.FieldValue.serverTimestamp(), changedByUid: uid, sourcePage: location.pathname, operationId, userAgent: navigator.userAgent };
+        transaction.update(docRef, { 'config.bays': nextBays, layoutAudit: audit, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+        transaction.set(docRef.collection('layoutAudit').doc(operationId), audit);
+    });
+};
+
+
+StateManager.prototype.restoreLatestStateBackup = async function (options = {}) {
+    if (!this.user) throw new Error('Not authenticated');
+    const uid = this.user.uid;
+    const stateRef = this._getStateDocRef(uid);
+    let targetDoc = null;
+
+    if (options.backupId) {
+        const doc = await stateRef.collection('stateBackups').doc(options.backupId).get();
+        if (!doc.exists) throw new Error('指定されたバックアップが見つかりません。');
+        targetDoc = doc;
+    } else {
+        const backups = await stateRef.collection('stateBackups')
+            .orderBy('createdAt', 'desc')
+            .limit(10)
+            .get();
+        targetDoc = backups.docs.find((doc) => {
+            const data = doc.data() || {};
+            return data.reason !== 'before-restore';
+        }) || null;
+    }
+
+    if (!targetDoc) throw new Error('復元可能なバックアップがありません。');
+    const targetBackupId = targetDoc.id;
+    const backup = targetDoc.data() || {};
+    const operationId = await this.createStateBackup('before-restore', options.operationId);
+
+    await stateRef.update({
+        config: backup.config || {},
+        slots: backup.slots || {},
+        splits: backup.splits || {},
+        injectList: backup.injectList || {},
+        janIndex: backup.janIndex || {},
+        productInfo: backup.productInfo || {},
+        userStates: backup.userStates || {},
+        progressSummary: backup.progressSummary || { total: 0, completed: 0 },
+        restoredFromBackupId: targetBackupId,
+        restoreOperationId: operationId,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+};
+
+StateManager.prototype._logStateIntegrity = function (data, metadata = {}) {
+    const slots = data?.slots || {};
+    const summary = {
+        bays: data?.config?.bays ?? null,
+        slotDocumentCount: Object.keys(slots).length,
+        assignedSkuCount: countAssignedSkus(slots),
+        injectListCount: Object.keys(data?.injectList || {}).length,
+        janIndexCount: Object.keys(data?.janIndex || {}).length,
+        fromCache: !!metadata.fromCache,
+        hasPendingWrites: !!metadata.hasPendingWrites,
+        updatedAt: data?.updatedAt ?? null
+    };
+    console.info('[state-integrity]', summary);
+    if (this.lastStateIntegrity && summary.assignedSkuCount < this.lastStateIntegrity.assignedSkuCount) {
+        console.error('[state-integrity] assigned SKU count decreased', {
+            previousAssignedCount: this.lastStateIntegrity.assignedSkuCount,
+            nextAssignedCount: summary.assignedSkuCount,
+            previousBays: this.lastStateIntegrity.bays,
+            nextBays: summary.bays
+        });
+    }
+    this.lastStateIntegrity = summary;
 };
 
 StateManager.prototype.update = function (updates) {
@@ -1228,14 +1389,32 @@ StateManager.prototype.update = function (updates) {
         ...updates,
         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     };
+    if (Object.prototype.hasOwnProperty.call(updates, 'config')) {
+        return Promise.reject(new Error('config全体の上書きは禁止されています。フィールド単位で更新してください。'));
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'config.bays')) {
+        return this.updateConfiguredBays(updates['config.bays']);
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'slots')) {
+        const before = countAssignedSkus(this.state?.slots || {});
+        const after = countAssignedSkus(updates.slots || {});
+        if (before > 0 && after === 0 && !updates.__allowDestructiveReset) {
+            return Promise.reject(new Error('投入済み配置を全消去するslots更新はバックアップ付きの明示的操作でのみ許可されます。'));
+        }
+        if (before > 0 && after < before) {
+            console.warn('[state-integrity] update payload decreases assigned SKU count', { before, after });
+        }
+        delete payload.__allowDestructiveReset;
+    }
 
     return docRef.update(payload).catch(async (error) => {
         const isNotFound =
             error?.code === 'not-found' ||
             /No document to update/i.test(error?.message || '');
         if (isNotFound) {
-            await docRef.set(payload, { merge: true });
-            return;
+            const safeError = new Error('状態ドキュメントが見つからないため更新を中止しました。再読み込み後に再試行してください。');
+            safeError.code = 'state-not-found';
+            throw safeError;
         }
         this._logFirestoreError('update', error, uid);
         throw error;
@@ -1623,12 +1802,16 @@ StateManager.prototype.startPicking = function (listId, activePickData) {
     });
 };
 
-StateManager.prototype.resetPreserveConfig = function () {
+StateManager.prototype.resetPreserveConfig = function (options = {}) {
     if (!this.user) return Promise.reject("Not authenticated");
 
     if (!this.state || !this.state.config) {
         return Promise.reject(new Error("状態を読み込み中です。少し待ってから再度リセットしてください。"));
     }
+    if (!options.operationId || options.confirmationText !== 'RESET') {
+        return Promise.reject(new Error("明示的なリセット操作IDと確認文字列がないためリセットを中止しました。"));
+    }
+
 
     const current = this.state;
     const currentConfig = current.config || {};
@@ -1637,7 +1820,8 @@ StateManager.prototype.resetPreserveConfig = function () {
         return Promise.reject(new Error("縦横設定を取得できませんでした。状態読込後に再度リセットしてください。"));
     }
 
-    const totalBays = currentConfig.bays || 9;
+    const totalBays = getValidConfiguredBays(current);
+    if (totalBays === null) return Promise.reject(new Error("総間口数を取得できないためリセットできません。"));
 
     const splits = {};
     for (let b = 1; b <= totalBays; b++) {
@@ -1681,7 +1865,7 @@ StateManager.prototype.resetPreserveConfig = function () {
     }
 
     const uid = this.user.uid;
-    return this._deleteAllPickListDocs(uid).then(() => this._getStateDocRef(uid).set(nextState)).then(() => {
+    return this.createStateBackup('before-reset', options.operationId).then(() => this._deleteAllPickListDocs(uid)).then(() => this._getStateDocRef(uid).set(nextState)).then(() => {
         this.clearPickListSubscription();
         this.clearOptimisticPickLines();
     }).catch((error) => {
@@ -1690,10 +1874,13 @@ StateManager.prototype.resetPreserveConfig = function () {
     });
 };
 
-StateManager.prototype.reset = function () {
+StateManager.prototype.reset = function (options = {}) {
     if (!this.user) return Promise.reject("Not authenticated");
+    if (!options.operationId || options.confirmationText !== 'RESET') {
+        return Promise.reject(new Error("明示的なリセット操作IDと確認文字列がないためリセットを中止しました。"));
+    }
     const uid = this.user.uid;
-    return this._deleteAllPickListDocs(uid).then(() => this.initializeNewSession(uid)).then(() => {
+    return this.createStateBackup('before-full-reset', options.operationId).then(() => this._deleteAllPickListDocs(uid)).then(() => this._getStateDocRef(uid).set(this._buildInitialState())).then(() => {
         this.clearPickListSubscription();
         this.clearOptimisticPickLines();
     });
@@ -2153,9 +2340,10 @@ StateManager.prototype.unassignSlot = function (slotKey, targetJan) {
     });
 };
 
-StateManager.prototype.resetBay = function (bayId) {
+StateManager.prototype.resetBay = async function (bayId) {
     if (!this.user || !this.state) return Promise.reject("Not authenticated");
     const uid = this.user.uid;
+    await this.createStateBackup('before-reset-bay');
     return this.db.runTransaction(async (transaction) => {
         const docRef = this._getStateDocRef(uid);
         const doc = await transaction.get(docRef);
