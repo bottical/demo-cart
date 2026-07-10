@@ -104,13 +104,20 @@
                 return;
             }
 
-            if (confirm("全てのデータを初期化してもよろしいですか？")) {
-                try {
-                    await stateMgr.resetPreserveConfig();
-                    alert("リセット完了");
-                } catch (e) {
-                    alert("エラー: " + e.message);
-                }
+            if (!confirm("全ての投入データ・配置・ピッキングリストを初期化します。バックアップ作成後に実行します。続行しますか？")) {
+                return;
+            }
+            const confirmationText = prompt('最終確認です。リセットする場合は RESET と入力してください。');
+            if (confirmationText !== 'RESET') {
+                alert('確認文字列が一致しないためリセットを中止しました。');
+                return;
+            }
+            const operationId = `reset-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            try {
+                await stateMgr.resetPreserveConfig({ operationId, confirmationText });
+                alert("リセット完了");
+            } catch (e) {
+                alert("エラー: " + e.message);
             }
         });
     });

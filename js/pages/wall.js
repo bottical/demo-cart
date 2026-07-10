@@ -38,6 +38,26 @@
         const advancedSettingsDetails = document.getElementById('advancedSettingsDetails');
         const currentBaysValue = document.getElementById('currentBaysValue');
         const closeSettingsBtn = document.getElementById('closeSettingsBtn');
+        const getValidBaysOrBlock = (state, messageTarget = multiViewContainer) => {
+            const totalBays = window.getValidConfiguredBays ? window.getValidConfiguredBays(state) : null;
+            if (totalBays === null) {
+                const text = stateMgr.globalLayoutSettingsLoadFailed
+                    ? '総間口数を取得できませんでした。通信状態を確認して再読み込みしてください。安全のため投入操作を停止しています。'
+                    : '間口設定を読み込んでいます。このままお待ちください。';
+                if (messageTarget) messageTarget.innerHTML = `<div class="card" style="padding:2rem; text-align:center; color:var(--danger); font-weight:800;">${text}</div>`;
+                return null;
+            }
+            return totalBays;
+        };
+        const ensureBaysReady = () => {
+            const totalBays = window.getValidConfiguredBays ? window.getValidConfiguredBays(stateMgr.state) : null;
+            if (totalBays === null) {
+                alert('総間口数を取得できませんでした。通信状態を確認して再読み込みしてください。安全のため操作を停止しています。');
+                return null;
+            }
+            return totalBays;
+        };
+
         const DEVICE_SETTINGS_KEY = 'picking_shelf_wall_device_settings_v1';
         const globalSettingsLoadWarning = document.getElementById('globalSettingsLoadWarning');
 
@@ -232,7 +252,7 @@
             if (cfg.orientation) settingOrientation.value = cfg.orientation;
             if (cfg.multiRows) settingMultiRows.value = cfg.multiRows;
             if (cfg.multiCols) settingMultiCols.value = cfg.multiCols;
-            currentBaysValue.textContent = cfg.bays || 9;
+            currentBaysValue.textContent = window.getValidConfiguredBays({ config: cfg }) ?? '未取得';
             const deviceSettings = getDeviceWallSettings();
             settingMultiStartId.value = deviceSettings.multiStartId || cfg.multiStartId || 1;
             settingDisplayScale.value = deviceSettings.displayScale || 'M';
@@ -287,6 +307,7 @@
         });
 
         applyBulkSplitBtn.addEventListener('click', async () => {
+            if (ensureBaysReady() === null) return;
             updateGlobalSettingsLoadWarning();
 
             if (stateMgr.globalLayoutSettingsLoadFailed) {
@@ -325,13 +346,15 @@
         });
 
         saveAdvancedSettingsBtn.addEventListener('click', async () => {
+            if (ensureBaysReady() === null) return;
             updateGlobalSettingsLoadWarning();
             if (stateMgr.globalLayoutSettingsLoadFailed) {
                 alert('全端末共通のレイアウト設定を取得できないため保存できません。通信復帰後に再読み込みしてください。');
                 return;
             }
             const currentConfig = stateMgr.state?.config || {};
-            const nextBays = parseInt(settingBays.value, 10) || 9;
+            const nextBays = parseInt(settingBays.value, 10);
+            if (!Number.isInteger(nextBays) || nextBays < 1 || nextBays > 100) { alert('総間口数は1〜100で入力してください。'); return; }
             const oldBays = parseInt(currentConfig.bays, 10) || null;
 
             const saveRisk = buildBaysReductionRisk(stateMgr.state, nextBays);
@@ -369,7 +392,8 @@
             };
 
             try {
-                await stateMgr.update({ config: newConfig });
+                await stateMgr.updateConfiguredBays(nextBays);
+                await stateMgr.update({ 'config.orientation': settingOrientation.value });
                 hideSetup();
                 alert('全端末共通のレイアウト設定を保存しました。スマホ・タブレットを含む全WALL画面に反映されます。');
                 currentSingleBayId = null;
@@ -565,9 +589,11 @@
         };
 
         const buildBaysReductionRisk = (state, nextBaysInput) => {
-            const currentBays = parseInt(state?.config?.bays, 10) || 9;
+            const currentBays = getValidBaysOrBlock(state);
+            if (currentBays === null) return;
             const parsedNextBays = parseInt(nextBaysInput, 10);
-            const nextBays = Number.isFinite(parsedNextBays) ? Math.max(1, parsedNextBays) : 9;
+            const nextBays = Number.isFinite(parsedNextBays) ? Math.max(1, parsedNextBays) : null;
+            if (nextBays === null) return { blocked: true, activeSlots: [], currentBays, nextBays: null };
             const isReduction = nextBays < currentBays;
             if (!isReduction) {
                 return {
@@ -878,7 +904,9 @@
 
             const items = collectUnallocatedItems(state);
             const totalQty = items.reduce((sum, item) => sum + item.qty, 0);
-            const nextBayNo = (state.config?.bays || 9) + 1;
+            const totalBaysForOther = getValidBaysOrBlock(state, null);
+                if (totalBaysForOther === null) return;
+                const nextBayNo = totalBaysForOther + 1;
 
             overlay = document.createElement('div');
             overlay.id = 'unallocatedSkusOverlay';
@@ -1413,7 +1441,9 @@
 
         const renderBay10 = (state) => {
             const unallocatedItems = collectUnallocatedItems(state);
-            const nextBayNo = (state.config?.bays || 9) + 1;
+            const totalBaysForOther = getValidBaysOrBlock(state, null);
+                if (totalBaysForOther === null) return;
+                const nextBayNo = totalBaysForOther + 1;
             const unallocatedCount = unallocatedItems.length;
             const currentUserState = state.userStates?.[stateMgr.currentUserId] || {};
             const myActivePick = currentUserState.activePick || {};
@@ -1479,7 +1509,9 @@
 
             const container = document.createElement('div');
             container.className = 'mobile-screen';
-            const nextBayNo = (state.config?.bays || 9) + 1;
+            const totalBaysForOther = getValidBaysOrBlock(state, null);
+                if (totalBaysForOther === null) return;
+                const nextBayNo = totalBaysForOther + 1;
             const indicators = getIndicators(state, 'UNALLOCATED');
             const isAnyPick = indicators.length > 0;
 
@@ -1651,6 +1683,9 @@
             const renderStart = performance.now();
             countRender("wall");
             const config = getEffectiveWallConfig(state);
+            const totalBays = getValidBaysOrBlock(state);
+            if (totalBays === null) return;
+            config.bays = totalBays;
             updateGlobalSettingsLoadWarning();
             const deviceSettings = getDeviceWallSettings();
             const displayScale = ['S', 'M', 'L'].includes(deviceSettings.displayScale) ? deviceSettings.displayScale : 'M';
@@ -1660,7 +1695,7 @@
             perf?.mark("wall.render.start", {
                 mode: state?.mode || null,
                 viewMode: config.viewMode || null,
-                bays: config.bays || 0,
+                bays: totalBays,
                 multiRows: config.multiRows || null,
                 multiCols: config.multiCols || null,
                 currentSingleBayId,
@@ -1703,10 +1738,10 @@
                     const r = config.multiRows || 3;
                     const c = config.multiCols || 3;
                     const start = Math.max(1, parseInt(deviceSettings.multiStartId, 10) || 1);
-                    const totalBays = config.bays || 0;
+                    const totalBays = config.bays;
                     const maxStart = Math.max(1, totalBays - (r * c) + 1);
                     const normalizedStart = Math.min(Math.max(1, start), maxStart);
-                    const end = Math.min(config.bays || 0, normalizedStart + (r * c) - 1);
+                    const end = Math.min(config.bays, normalizedStart + (r * c) - 1);
                     let maxSplit = 1;
                     for (let bay = normalizedStart; bay <= end; bay++) {
                         maxSplit = Math.max(maxSplit, parseInt(state.splits?.[bay], 10) || 1);
@@ -1714,7 +1749,7 @@
                     return maxSplit;
                 }
                 let maxSplit = 1;
-                for (let bay = 1; bay <= (config.bays || 0); bay++) {
+                for (let bay = 1; bay <= config.bays; bay++) {
                     maxSplit = Math.max(maxSplit, parseInt(state.splits?.[bay], 10) || 1);
                 }
                 return maxSplit;
@@ -1795,7 +1830,7 @@
                 const r = config.multiRows || 3;
                 const c = config.multiCols || 3;
                 const start = Math.max(1, parseInt(deviceSettings.multiStartId, 10) || 1);
-                const totalBays = config.bays || 0;
+                const totalBays = config.bays;
                 const maxStart = Math.max(1, totalBays - (r * c) + 1);
                 const normalizedStart = Math.min(Math.max(1, start), maxStart);
                 const end = Math.min(config.bays, normalizedStart + (r * c) - 1);
