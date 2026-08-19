@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>卸仕分け 取込</title>
-  <link rel="stylesheet" href="css/style.css?v=help-20260622a">
+  <link rel="stylesheet" href="css/style.css?v=sort-master-20260819c">
 </head>
 <body class="sort-import-body">
   <div class="sort-page">
@@ -17,6 +17,7 @@
         <a class="btn btn-outline" href="index.html">HOMEへ戻る</a>
         <a class="btn btn-outline" href="sort-scan.html">PCスキャン画面へ</a>
         <a class="btn btn-outline" href="sort-wall.html">仕分け先表示画面へ</a>
+        <a class="btn btn-outline" href="sort-master.html">仕分け先マスター</a>
       </div>
     </header>
 
@@ -42,6 +43,10 @@
               <span class="sort-field-label">数量列</span>
               <input id="colQty" type="number" min="1" placeholder="例: 3">
             </label>
+            <label class="sort-field" for="colDestCode">
+              <span class="sort-field-label">仕分け先コード列</span>
+              <input id="colDestCode" type="number" min="1" placeholder="例: 4">
+            </label>
           </div>
         </section>
 
@@ -51,10 +56,6 @@
             <label class="sort-field" for="colLabel">
               <span class="sort-field-label">商品表示名列</span>
               <input id="colLabel" type="number" min="1" placeholder="任意">
-            </label>
-            <label class="sort-field" for="colDestCode">
-              <span class="sort-field-label">仕分け先コード列</span>
-              <input id="colDestCode" type="number" min="1" placeholder="任意">
             </label>
           </div>
         </section>
@@ -70,6 +71,7 @@
         </div>
         <div id="msg" class="sort-message"></div>
       </div>
+      <div id="masterEmptyNotice" class="card sort-card sort-master-notice" hidden>仕分け先マスターが登録されていません。<br>卸仕分けを開始する前に仕分け先コードと物理配置を登録してください。<br><a class="btn btn-primary" href="sort-master.html" target="_blank">仕分け先マスターを設定</a></div>
 
       <div class="card sort-card">
         <h3>プレビュー</h3>
@@ -89,7 +91,7 @@
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="js/firebase-config.js"></script>
-  <script src="js/sort-state-manager.js?v=sort-20260527c"></script>
-  <script src="js/pages/sort-import.js?v=sort-20260601b"></script>
+  <script src="js/sort-state-manager.js?v=sort-master-20260819c"></script>
+  <script src="js/pages/sort-import.js?v=sort-master-20260819c"></script>
 </body>
 </html>
