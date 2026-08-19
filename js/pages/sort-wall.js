@@ -53,7 +53,11 @@
     const getSortColor = (displayOrder) => SORT_COLORS[(Math.max(1, Number(displayOrder || 1)) - 1) % SORT_COLORS.length];
     const getDisplayScale = () => localStorage.getItem('sortDisplayScale') || 'M';
 
-    $('toggleCfg').onclick = () => $('cfgWrap').classList.toggle('open');
+    $('toggleCfg').onclick = () => {
+      const isOpen = $('cfgWrap').classList.toggle('open');
+      document.body.classList.toggle('is-config-open', isOpen);
+      $('toggleCfg').setAttribute('aria-expanded', String(isOpen));
+    };
     $('start').value = localStorage.getItem('sortSlotStartIndex') || 1;
     $('count').value = localStorage.getItem('sortSlotCount') || 4;
     $('scale').value = getDisplayScale();
@@ -112,6 +116,7 @@
 
       const cards = $('cards');
       cards.innerHTML = '';
+      cards.classList.remove('is-single');
       if (!b?.destinations) {
         cards.innerHTML = '<div class="sort-slot-empty">バッチ未作成</div>';
         return;
@@ -120,6 +125,7 @@
       const start = Number(localStorage.getItem('sortSlotStartIndex') || 1);
       const count = Number(localStorage.getItem('sortSlotCount') || 4);
       const selected = Object.values(b.destinations).sort((a, c) => a.displayOrder - c.displayOrder).slice(start - 1, start - 1 + count);
+      cards.classList.toggle('is-single', selected.length === 1);
 
       selected.forEach((dest) => {
         const itemKey = item?.itemKey;

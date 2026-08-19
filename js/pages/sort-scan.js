@@ -12,6 +12,11 @@
       return /[",\n\r]/.test(escaped) ? `"${escaped}"` : escaped;
     };
     const escapeHtml = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    const getAllocationStatusDisplay = (status) => {
+      if (status === 'done') return { label: '✓ 完了', className: 'is-done' };
+      if (status === 'required') return { label: '未完了', className: 'is-required' };
+      return { label: '状態不明', className: 'is-unknown' };
+    };
 
     const summarize = (item, batch) => {
       const allocs = Object.values(item.allocations || {});
@@ -27,14 +32,27 @@
       const b = snapshot?.batch;
       const st = snapshot?.sortState || {};
       const prev = st.previousSkuSummary;
-      $('previous').textContent = prev ? `前回SKU: ${prev.productLabel} / JAN:${prev.jan}\n前回ステータス: ${prev.done} / ${prev.total} 完了\n未完了: ${prev.undone.join(' / ') || 'なし'}` : '-';
+      if (prev) {
+        const isDone = prev.done === prev.total;
+        const undone = prev.undone || [];
+        $('previous').innerHTML = `
+          <div>前回SKU: ${escapeHtml(prev.productLabel)} / JAN:${escapeHtml(prev.jan)}</div>
+          <div class="sort-previous-status">
+            <span class="sort-status-badge ${isDone ? 'is-done' : 'is-required'}">${isDone ? '✓ 完了' : '未完了'}</span>
+            <strong>${escapeHtml(prev.done)} / ${escapeHtml(prev.total)} 完了</strong>
+          </div>
+          <div class="sort-previous-undone"><strong>未完了：</strong>${isDone ? 'なし' : `<ul>${undone.map((entry) => `<li>${escapeHtml(entry)}</li>`).join('')}</ul>`}</div>`;
+      } else {
+        $('previous').textContent = '-';
+      }
 
       const activeItemKey = st.activeItemKey;
       if (!activeItemKey || !b?.items?.[activeItemKey]) { $('current').innerHTML = 'スキャン待機中'; return; }
       const item = b.items[activeItemKey];
       const rows = Object.values(item.allocations || {}).map((a) => {
         const order = b.destinations?.[a.sortSlotId]?.displayOrder || 0;
-        return `<tr><td>No.${String(order).padStart(3, '0')}</td><td>${escapeHtml(a.destinationName)}</td><td>${a.requiredQty}個</td><td>${escapeHtml(a.status)}</td></tr>`;
+        const statusDisplay = getAllocationStatusDisplay(a.status);
+        return `<tr><td>No.${String(order).padStart(3, '0')}</td><td>${escapeHtml(a.destinationName)}</td><td>${a.requiredQty}個</td><td><span class="sort-status-badge ${statusDisplay.className}">${statusDisplay.label}</span></td></tr>`;
       }).join('');
       $('current').innerHTML = `<div><strong>${escapeHtml(item.productLabel || '商品表示名未設定')}</strong></div><div>JAN: ${escapeHtml(item.jan)}</div><div>総数量: ${item.totalQty}</div><table style='width:100%;margin-top:.5rem;'><thead><tr><th>仕分け先</th><th>卸先名</th><th>数量</th><th>状態</th></tr></thead><tbody>${rows}</tbody></table>`;
     };

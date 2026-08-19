@@ -3,8 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0f172a">
   <title>仕分け先表示</title>
-  <link rel="stylesheet" href="css/style.css?v=help-20260622a">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="css/style.css?v=sort-wall-mobile-20260819b">
 </head>
 <body class="sort-wall sort-wall-mode">
   <div class="sort-wall-root">
@@ -18,11 +20,11 @@
         <a class="btn btn-outline" href="sort-import.html">取込</a>
         <a class="btn btn-outline" href="sort-scan.html">PCスキャン</a>
       </div>
+      <button id="toggleCfg" class="btn btn-outline sort-wall-settings-toggle" type="button" aria-expanded="false" aria-controls="cfgWrap">⚙ 端末設定</button>
     </header>
 
     <main class="sort-wall-main">
       <section class="sort-wall-settings">
-        <button id="toggleCfg" class="btn btn-outline" type="button">端末設定</button>
         <div id="cfgWrap" class="sort-wall-settings-panel">
           <label class="sort-wall-field" for="start">
             <span>表示開始番号</span>
@@ -43,6 +45,11 @@
           <div class="sort-wall-setting-actions">
             <button id="save" class="btn btn-primary" type="button">端末設定保存</button>
           </div>
+          <nav class="sort-wall-settings-nav" aria-label="仕分け画面ナビゲーション">
+            <a class="btn btn-outline" href="index.html">HOME</a>
+            <a class="btn btn-outline" href="sort-import.html">取込</a>
+            <a class="btn btn-outline" href="sort-scan.html">PCスキャン</a>
+          </nav>
         </div>
       </section>
 
@@ -62,6 +69,11 @@
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
   <script src="js/firebase-config.js"></script>
   <script src="js/sort-state-manager.js?v=sort-20260601c"></script>
-  <script src="js/pages/sort-wall.js?v=sort-20260601e"></script>
+  <script>
+    document.body.dataset.displayMode = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true
+      ? 'standalone'
+      : 'browser';
+  </script>
+  <script src="js/pages/sort-wall.js?v=sort-wall-mobile-20260819a"></script>
 </body>
 </html>
