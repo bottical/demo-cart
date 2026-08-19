@@ -206,7 +206,7 @@
                 } catch (e) {
                     console.error('完了済みピッキングの解除に失敗しました:', e);
                     AudioManager?.playErrorSound?.();
-                    showInlineError('完了済みピッキングの解除に失敗したため、ページ移動を中止しました。通信状態をご確認ください。');
+                    showInlineError(stateMgr.isDataOperationBlockError(e) ? e.message : '完了済みピッキングの解除に失敗したため、ページ移動を中止しました。通信状態をご確認ください。');
                     return;
                 }
             }
@@ -235,6 +235,12 @@
         };
 
         const loadList = async (id) => {
+            if (stateMgr.isImportIntegrityBlocked()) {
+                AudioManager.playErrorSound();
+                showInlineError(stateMgr.getImportIntegrityBlockedMessage());
+                listIdInput.value = '';
+                return;
+            }
             const targetId = (id || '').trim();
             if (!targetId) return;
             const work = stateMgr.getInProgressWorkForCurrentUser(stateMgr.state);
@@ -257,12 +263,17 @@
             } catch (e) {
                 console.error('ピッキング切り替え時のキャンセルに失敗しました:', e);
                 AudioManager?.playErrorSound?.();
-                showInlineError('ピッキング作業のキャンセルに失敗したため、新規読込を中止しました。通信状態をご確認ください。');
+                showInlineError(stateMgr.isDataOperationBlockError(e) ? e.message : 'ピッキング作業のキャンセルに失敗したため、新規読込を中止しました。通信状態をご確認ください。');
             }
         };
 
         const consumeByJan = async (inputJan) => {
             const janOpStart = performance.now();
+            if (stateMgr.isImportIntegrityBlocked()) {
+                AudioManager.playErrorSound();
+                showJanFeedback(stateMgr.getImportIntegrityBlockedMessage(), 'error');
+                return;
+            }
             const jan = stateMgr.normalizeJanValue(inputJan);
             if (!jan) return;
             const currentUserState = stateMgr.state?.userStates?.[stateMgr.currentUserId] || {};
@@ -334,7 +345,7 @@
                 console.error('consumeByJan failed:', e);
                 stateMgr.clearOptimisticPickLine(currentPickingNo, matched.index, opId);
                 AudioManager.playErrorSound();
-                showJanFeedback('JAN処理に失敗しました', 'error');
+                showJanFeedback(stateMgr.isDataOperationBlockError(e) ? e.message : 'JAN処理に失敗しました', 'error');
                 perf?.mark('pick.verify.jan.failed', { currentPickingNo, lineIndex: matched.index, janLast4: jan.slice(-4), quantityVerification, elapsedMs: Math.round(performance.now() - janOpStart), message: e?.message || String(e) });
                 render(stateMgr.state || {});
             });
@@ -485,6 +496,11 @@
 
         const completeLine = async (index) => {
             const opStart = performance.now();
+            if (stateMgr.isImportIntegrityBlocked()) {
+                AudioManager?.playErrorSound?.();
+                showInlineError(stateMgr.getImportIntegrityBlockedMessage());
+                return;
+            }
             const currentUserState = stateMgr.state.userStates?.[stateMgr.currentUserId];
             const currentPickingNo = currentUserState?.currentPickingNo;
             if (!currentPickingNo) return;
@@ -500,7 +516,7 @@
             } catch (e) {
                 console.error('completeLine failed:', e);
                 AudioManager?.playErrorSound?.();
-                showInlineError('完了処理に失敗しました。通信状態をご確認ください。');
+                showInlineError(stateMgr.isDataOperationBlockError(e) ? e.message : '完了処理に失敗しました。通信状態をご確認ください。');
                 perf?.mark('pick.complete.button.failed', { currentPickingNo, lineIndex, janLast4, quantityVerification, elapsedMs: Math.round(performance.now() - opStart), message: e?.message || String(e) });
             }
         };
@@ -524,6 +540,8 @@
             pickModeToggle.addEventListener('change', async () => {
                 const nextPickMode = pickModeToggle.checked ? 'VERIFY' : 'NORMAL';
                 try {
+                    const block = stateMgr.getDataOperationBlock();
+                    if (block.blocked) throw Object.assign(new Error(block.message), { code: block.code });
                     await stateMgr.update({
                         'config.pickMode': nextPickMode
                     });
@@ -533,6 +551,8 @@
                     restoreFocusIfNeeded(stateMgr.state);
                 } catch (e) {
                     console.error('pickMode update failed:', e);
+                    pickModeToggle.checked = getConfig().pickMode === 'VERIFY';
+                    showInlineError(stateMgr.isDataOperationBlockError(e) ? e.message : 'ピッキングモードを更新できませんでした。通信状態をご確認ください。');
                 }
             });
         }
@@ -540,16 +560,25 @@
         if (quantityVerificationToggle) {
             quantityVerificationToggle.addEventListener('change', async () => {
                 try {
+                    const block = stateMgr.getDataOperationBlock();
+                    if (block.blocked) throw Object.assign(new Error(block.message), { code: block.code });
                     await stateMgr.update({
                         'config.quantityVerification': !!quantityVerificationToggle.checked
                     });
                 } catch (e) {
                     console.error('quantityVerification update failed:', e);
+                    quantityVerificationToggle.checked = !!getConfig().quantityVerification;
+                    showInlineError(stateMgr.isDataOperationBlockError(e) ? e.message : '数量検品設定を更新できませんでした。通信状態をご確認ください。');
                 }
             });
         }
 
         document.getElementById('resetPickingBtn').onclick = async () => {
+            if (stateMgr.isImportIntegrityBlocked()) {
+                AudioManager?.playErrorSound?.();
+                showInlineError(stateMgr.getImportIntegrityBlockedMessage());
+                return;
+            }
             const currentUserState = stateMgr.state.userStates?.[stateMgr.currentUserId];
             if (!currentUserState?.currentPickingNo) return;
 
@@ -559,7 +588,7 @@
             } catch (e) {
                 console.error('resetPicking failed:', e);
                 AudioManager?.playErrorSound?.();
-                showInlineError('リセットに失敗しました。通信状態をご確認ください。');
+                showInlineError(stateMgr.isDataOperationBlockError(e) ? e.message : 'リセットに失敗しました。通信状態をご確認ください。');
             }
         };
 

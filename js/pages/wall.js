@@ -57,6 +57,20 @@
             }
             return totalBays;
         };
+        const updateWallState = async (updates) => {
+            const block = stateMgr.getDataOperationBlock();
+            if (block.blocked) {
+                alert(block.message);
+                return false;
+            }
+            try {
+                await stateMgr.update(updates);
+                return true;
+            } catch (error) {
+                alert(stateMgr.isDataOperationBlockError(error) ? error.message : '設定を更新できませんでした。通信状態をご確認ください。');
+                return false;
+            }
+        };
 
         const DEVICE_SETTINGS_KEY = 'picking_shelf_wall_device_settings_v1';
         const globalSettingsLoadWarning = document.getElementById('globalSettingsLoadWarning');
@@ -341,7 +355,8 @@
                 render(stateMgr.state);
             } catch (error) {
                 console.error('一括分割設定の適用に失敗しました:', error);
-                alert('一括分割設定の適用に失敗しました。通信状態をご確認ください。');
+                const block = stateMgr.getDataOperationBlock();
+                alert(block.blocked ? block.message : '一括分割設定の適用に失敗しました。通信状態をご確認ください。');
             }
         });
 
@@ -400,7 +415,7 @@
                 render(stateMgr.state);
             } catch (error) {
                 console.error('全端末共通のレイアウト設定の保存に失敗しました:', error);
-                alert('全端末共通のレイアウト設定の保存に失敗しました。通信状態をご確認ください。');
+                alert(stateMgr.isDataOperationBlockError(error) ? error.message : '全端末共通のレイアウト設定の保存に失敗しました。通信状態をご確認ください。');
             }
         });
 
@@ -412,7 +427,7 @@
             const splitCount = stateMgr.state.splits?.[editTargetBay] || 1;
             const maxSplit = 6;
             if (splitCount < maxSplit) {
-                stateMgr.update({ [`splits.${editTargetBay}`]: splitCount + 1 });
+                updateWallState({ [`splits.${editTargetBay}`]: splitCount + 1 });
             }
             bayEditOverlay.classList.add('hidden');
         };
@@ -425,7 +440,7 @@
                 if (splitRisk.blocked) {
                     alert(buildSplitReductionBlockedMessage(splitRisk));
                 } else {
-                    stateMgr.update({ [`splits.${editTargetBay}`]: splitCount - 1 });
+                    updateWallState({ [`splits.${editTargetBay}`]: splitCount - 1 });
                 }
             }
             bayEditOverlay.classList.add('hidden');
@@ -1108,6 +1123,11 @@
                 perf?.mark('wall.pick.tap.ignored', { currentPickingNo: listId, slotKey, activePickCount, elapsedMs: Math.round(performance.now() - tapStart) });
                 return;
             }
+            if (stateMgr.isImportIntegrityBlocked()) {
+                AudioManager?.playErrorSound?.();
+                alert(stateMgr.getImportIntegrityBlockedMessage());
+                return;
+            }
             const opId = stateMgr.setOptimisticPickCompletion(slotKey, listId);
             perf?.mark('wall.pick.optimistic.set', { currentPickingNo: listId, slotKey, activePickCount, elapsedMs: Math.round(performance.now() - tapStart) });
             if (!opId) return;
@@ -1120,7 +1140,7 @@
             } catch (error) {
                 console.error('ピッキング完了処理に失敗しました:', error);
                 stateMgr.clearOptimisticPickCompletion(slotKey, opId);
-                stateMgr.setTransientWallError(slotKey, '通信失敗。もう一度タップしてください');
+                stateMgr.setTransientWallError(slotKey, stateMgr.isDataOperationBlockError(error) ? error.message : '通信失敗。もう一度タップしてください');
                 AudioManager.playErrorSound();
                 perf?.mark('wall.pick.complete.failed', { currentPickingNo: listId, slotKey, activePickCount, elapsedMs: Math.round(performance.now() - tapStart), message: error?.message || String(error) });
             }
@@ -1375,7 +1395,7 @@
                         <div style="font-weight:800; font-size:0.75rem; color:${isInjectWaitingUi ? '#f87171' : 'white'}; margin-bottom:8px;">未設定</div>
                         <button class="btn-setup">初期化</button>
                     `;
-                    setup.querySelector('.btn-setup').onclick = () => stateMgr.update({ [`splits.${b}`]: 1 });
+                    setup.querySelector('.btn-setup').onclick = () => updateWallState({ [`splits.${b}`]: 1 });
                     screen.appendChild(setup);
                 } else {
                     const controls = document.createElement('div');
@@ -1401,7 +1421,7 @@
                                 alert(buildSplitReductionBlockedMessage(latestRisk));
                                 return;
                             }
-                            stateMgr.update({ [`splits.${b}`]: latestSplitCount - 1 });
+                            updateWallState({ [`splits.${b}`]: latestSplitCount - 1 });
                         };
                     }
                     controls.appendChild(minusBtn);
@@ -1417,7 +1437,7 @@
                     } else {
                         plusBtn.onclick = (e) => {
                             e.stopPropagation();
-                            stateMgr.update({ [`splits.${b}`]: splitCount + 1 });
+                            updateWallState({ [`splits.${b}`]: splitCount + 1 });
                         };
                     }
                     controls.appendChild(plusBtn);

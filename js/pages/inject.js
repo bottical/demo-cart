@@ -5,6 +5,7 @@
         const scanInput = document.getElementById('scanInput');
         const scanMsg = document.getElementById('scanMsg');
         const loadCsvBtn = document.getElementById('loadCsvBtn');
+        const importIntegrityStatus = document.getElementById('importIntegrityStatus');
         const slotCsvFileInput = document.getElementById('slotCsvFile');
         const importSlotLayoutBtn = document.getElementById('importSlotLayoutBtn');
         const exportSlotLayoutBtn = document.getElementById('exportSlotLayoutBtn');
@@ -23,7 +24,160 @@
         let highlightTimer = null;
         const HIGHLIGHT_MS = 3000;
         let pendingSlotImportPreview = null;
+        let isImporting = false;
 
+
+
+        const formatNumber = (value) => Number(value || 0).toLocaleString('ja-JP');
+        const formatNullableNumber = (value) => (value === null || value === undefined)
+            ? '未確認'
+            : Number(value).toLocaleString('ja-JP');
+
+        const setImportIntegrityStatus = (type, text) => {
+            if (!importIntegrityStatus) return;
+            importIntegrityStatus.textContent = text || '';
+            importIntegrityStatus.className = `alert ${type || 'info'}`;
+            importIntegrityStatus.classList.toggle('hidden', !text);
+        };
+
+        const buildIntegrityMismatchSummary = (report) => {
+            if (!report) return '';
+            return `
+
+不一致詳細
+不足ピッキングNo.：${formatNumber(report.missingPickListCount)}件
+余分なピッキングNo.：${formatNumber(report.unexpectedPickListCount)}件
+明細内容不一致：${formatNumber(report.mismatchedPickListCount)}件
+JAN数量不一致：${formatNumber(report.janQuantityDiffCount)}件
+進捗サマリ：${report.progressSummaryValid ? '正常' : '不一致'}`;
+        };
+
+        const buildFailedIntegrityMessage = (report) => {
+            const expected = report?.expected || {};
+            const actual = report?.actual || {};
+            return `インポートの整合性確認に失敗しました。
+
+ピッキングリスト
+期待件数：${formatNumber(expected.pickListCount)}件
+DB確認件数：${formatNullableNumber(actual.pickListCount)}件
+
+明細
+期待行数：${formatNumber(expected.lineCount)}行
+DB確認行数：${formatNullableNumber(actual.lineCount)}行${buildIntegrityMismatchSummary(report)}
+
+一部データのみ保存された可能性があります。
+この状態では作業を開始できません。
+
+通信環境を確認し、データをリセットしてから
+同じファイルを再度インポートしてください。`;
+        };
+
+        const buildNoImportableDataMessage = (excludedCount = 0) => `取込可能なデータがありません。
+
+列設定、ヘッダー設定、ピッキングNo.列、
+JAN列、数量列を確認してください。
+
+完全空行以外で不正なデータ行がある場合は、
+インポート全体を中止します。
+空行数：${formatNumber(excludedCount)}件
+
+既存のピッキングデータは変更していません。`;
+
+
+        const buildInvalidRowsMessage = (invalidRows) => {
+            const samples = (invalidRows || []).slice(0, 20)
+                .map((row) => `${formatNumber(row.rowNumber)}行目：${row.reason}`)
+                .join('\n');
+            const more = invalidRows.length > 20
+                ? `\n...ほか${formatNumber(invalidRows.length - 20)}件`
+                : '';
+            return `インポートを中止しました。
+
+不正なデータ行：${formatNumber(invalidRows.length)}件
+
+${samples}${more}
+
+既存データは変更していません。`;
+        };
+
+        const isCompletelyEmptyRow = (parts) => !parts.some((value) => String(value ?? '').trim() !== '');
+
+        const getPickNoInvalidReason = (pickNo) => {
+            if (!pickNo) return 'ピッキングNo.が空です';
+            if (pickNo.includes('/')) return 'ピッキングNo.に使用できない文字があります';
+            if (pickNo === '.' || pickNo === '..') return 'ピッキングNo.に使用できない値です';
+            if (/^__.*__$/.test(pickNo)) return 'ピッキングNo.に予約済みの形式が使用されています';
+            if (new TextEncoder().encode(pickNo).length > 1500) return 'ピッキングNo.が長すぎます';
+            return null;
+        };
+
+        const buildAlreadyProcessingMessage = (current) => `別のインポート処理が実行中です。
+
+完了するまで操作せず、
+データリセットも実行しないでください。
+
+ファイル：${current?.fileName || '不明'}
+開始：${current?.startedAt ? new Date(current.startedAt).toLocaleString('ja-JP') : '不明'}`;
+
+        const renderImportIntegrityStatus = (state) => {
+            const integrity = state?.importIntegrity || null;
+            if (!integrity?.status) {
+                setImportIntegrityStatus(null, '');
+                return;
+            }
+            if (integrity.status === 'processing') {
+                const active = stateMgr.isActiveImportIntegrityProcessing();
+                setImportIntegrityStatus(active ? 'info' : 'error', active ? `ピッキングデータを取り込み中です。
+
+完了するまで操作せず、
+データリセットも実行しないでください。
+
+ファイル：${integrity.fileName || '不明'}` : `前回のインポート処理が中断された可能性があります。
+
+この状態では作業を開始できません。
+データをリセットして再インポートしてください。`);
+            } else if (integrity.status === 'failed') {
+                setImportIntegrityStatus('error', `インポートが不完全な可能性があります。
+
+ピッキングリスト：${formatNullableNumber(integrity.actualPickListCount)} / ${formatNumber(integrity.expectedPickListCount)}件
+明細：${formatNullableNumber(integrity.actualLineCount)} / ${formatNumber(integrity.expectedLineCount)}行
+
+不足ピッキングNo.：${formatNumber(integrity.missingPickListCount)}件
+余分なピッキングNo.：${formatNumber(integrity.unexpectedPickListCount)}件
+明細内容不一致：${formatNumber(integrity.mismatchedPickListCount)}件
+JAN数量不一致：${formatNumber(integrity.janQuantityDiffCount)}件
+進捗サマリ：${integrity.progressSummaryValid === false ? '不一致' : '未確認'}
+
+このデータでは作業を開始せず、
+データをリセットして再インポートしてください。`);
+            } else if (integrity.status === 'success') {
+                setImportIntegrityStatus('success', `前回取込は整合性確認済みです。
+
+JAN：${formatNullableNumber(integrity.actualJanCount ?? integrity.expectedJanCount)}品目
+ピッキングリスト：${formatNullableNumber(integrity.actualPickListCount)} / ${formatNumber(integrity.expectedPickListCount)}件
+明細：${formatNullableNumber(integrity.actualLineCount)} / ${formatNumber(integrity.expectedLineCount)}行`);
+            } else {
+                setImportIntegrityStatus(null, '');
+            }
+        };
+
+        const buildServerReadFailedMessage = () => `データ保存後の整合性確認を完了できませんでした。
+
+通信が不安定な可能性があります。
+この状態では作業を開始できません。
+
+通信環境を確認し、データをリセットしてから
+再度インポートしてください。`;
+
+
+        const isSlotLayoutImportBlocked = () => isImporting || stateMgr.isImportIntegrityBlocked();
+
+        const showSlotLayoutImportBlockedMessage = () => {
+            const message = isImporting
+                ? 'ピッキングデータを取り込み中です。\n\n間口配置インポートは実行できません。'
+                : stateMgr.getImportIntegrityBlockedMessage();
+            alert(message || '現在、間口配置インポートは実行できません。');
+        };
 
         const getValidBaysOrBlock = (state, messageTarget = bayGrid) => {
             const totalBays = window.getValidConfiguredBays ? window.getValidConfiguredBays(state) : null;
@@ -38,8 +192,8 @@
                 return null;
             }
             if (scanInput) scanInput.disabled = false;
-            if (loadCsvBtn) loadCsvBtn.disabled = false;
-            if (importSlotLayoutBtn) importSlotLayoutBtn.disabled = false;
+            if (loadCsvBtn) loadCsvBtn.disabled = isImporting;
+            if (importSlotLayoutBtn) importSlotLayoutBtn.disabled = isSlotLayoutImportBlocked();
             return totalBays;
         };
 
@@ -70,9 +224,10 @@
             (state) => {
                 if (!state) return;
 
+                const operationBlock = stateMgr.getDataOperationBlock();
                 if (state.mode === 'INJECT') {
                     hasRequestedInjectModeSync = true;
-                } else if (stateMgr.user && !hasRequestedInjectModeSync) {
+                } else if (!operationBlock.blocked && stateMgr.user && !hasRequestedInjectModeSync) {
                     hasRequestedInjectModeSync = true;
                     stateMgr.update({ mode: 'INJECT' }).catch((e) => {
                         console.error('inject mode への切り替えに失敗しました:', e);
@@ -80,6 +235,7 @@
                     });
                 }
 
+                renderImportIntegrityStatus(state);
                 render(state);
                 updateUIState(state);
                 updateUserSelectorUI();
@@ -450,8 +606,12 @@
             }
 
             const pickLoaded = hasPickListLoaded(state);
-            importSlotLayoutBtn.disabled = !pickLoaded;
-            slotImportHints.innerHTML = pickLoaded
+            const slotImportBlocked = isSlotLayoutImportBlocked();
+            importSlotLayoutBtn.disabled = !pickLoaded || slotImportBlocked;
+            importSlotLayoutBtn.title = slotImportBlocked ? (isImporting ? 'ピッキングデータを取り込み中です' : stateMgr.getImportIntegrityBlockedMessage()) : '';
+            slotImportHints.innerHTML = slotImportBlocked
+                ? ['ピッキングデータ取込中または整合性未確認のため、間口配置インポートは実行できません'].map((text) => `<p>${text}</p>`).join('')
+                : pickLoaded
                 ? [
                     '現在の間口配置を全置換します',
                     '既存の配置は上書きされます',
@@ -703,11 +863,13 @@
             return stateMgr.state?.config?.csvFormat || { skipHeader: true, pickCol: 1, janCol: 2, qtyCol: 3, labelCol: null, productCodeCol: null, productNameCol: null };
         };
 
-        const saveCsvFormat = (format) => {
+        const saveCsvFormat = async (format) => {
+            const block = stateMgr.getDataOperationBlock();
+            if (block.blocked) throw Object.assign(new Error(block.message), { code: block.code });
+            await stateMgr.update({ 'config.csvFormat': format });
             if (stateMgr.user && stateMgr.user.uid) {
                 localStorage.setItem(`csvFormat_${stateMgr.user.uid}`, JSON.stringify(format));
             }
-            stateMgr.update({ 'config.csvFormat': format });
         };
 
         csvConfigBtn.addEventListener('click', () => {
@@ -726,7 +888,7 @@
             csvConfigModal.classList.add('hidden');
         });
 
-        csvConfigSave.addEventListener('click', () => {
+        csvConfigSave.addEventListener('click', async () => {
             const format = {
                 skipHeader: csvSkipHeader.checked,
                 pickCol: parseInt(csvColPick.value, 10) || 1,
@@ -736,9 +898,13 @@
                 productCodeCol: parseInt(csvColProductCode.value, 10) || null,
                 productNameCol: parseInt(csvColProductName.value, 10) || null
             };
-            saveCsvFormat(format);
-            csvConfigModal.classList.add('hidden');
-            alert('CSVの列取り込み設定を更新しました。');
+            try {
+                await saveCsvFormat(format);
+                csvConfigModal.classList.add('hidden');
+                alert('CSVの列取り込み設定を更新しました。');
+            } catch (error) {
+                alert(stateMgr.isDataOperationBlockError(error) ? error.message : 'CSVの列取り込み設定を更新できませんでした。通信状態をご確認ください。');
+            }
         });
 
         const processImportedRows = async (rows, format, sourceFile = null) => {
@@ -754,18 +920,31 @@
             const productInfo = {};
             const labelVariantsByJan = {};
             const groupedPick = {};
+            const invalidImportRows = [];
+            let emptyImportRowCount = 0;
 
-            targetRows.forEach((row) => {
+            targetRows.forEach((row, rowIdx) => {
                 const parts = Array.isArray(row)
                     ? row.map(v => String(v ?? '').trim())
                     : parseCsvLine(String(row ?? ''));
+                if (isCompletelyEmptyRow(parts)) {
+                    emptyImportRowCount += 1;
+                    return;
+                }
+                const rowNumber = (format.skipHeader ? 2 : 1) + rowIdx;
                 const maxIdx = Math.max(idxPick, idxJan, idxQty);
-                if (parts.length <= maxIdx) return;
+                if (parts.length <= maxIdx) {
+                    invalidImportRows.push({ rowNumber, reason: '必須列が存在しません', pickNo: '', jan: '', qtyRaw: '' });
+                    return;
+                }
 
                 const pickNo = String(parts[idxPick] ?? '').trim();
-                const jan = normalizeJan(String(parts[idxJan] ?? '').trim());
+                const janRaw = String(parts[idxJan] ?? '').trim();
+                const jan = normalizeJan(janRaw);
                 const qtyRaw = String(parts[idxQty] ?? '').trim();
-                const qty = parseInt(qtyRaw, 10) || 0;
+                const normalizedQtyRaw = qtyRaw.replace(/,/g, '');
+                const qty = Number(normalizedQtyRaw);
+                const validQty = Number.isFinite(qty) && Number.isInteger(qty) && qty > 0;
                 const productCode = idxProductCode !== null ? normalizeText(parts[idxProductCode]) : '';
                 const productName = idxProductName !== null ? normalizeText(parts[idxProductName]) : '';
                 const productLabel = buildProductLabel({
@@ -774,7 +953,17 @@
                     productName
                 });
 
-                if (!jan || !pickNo) return;
+                const pickNoReason = getPickNoInvalidReason(pickNo);
+                let reason = pickNoReason;
+                if (!reason && !jan) reason = 'JANが空です';
+                if (!reason && !qtyRaw) reason = '数量が空です';
+                if (!reason && !Number.isFinite(qty)) reason = '数量が数値ではありません';
+                if (!reason && qty <= 0) reason = '数量が0以下です';
+                if (!reason && !Number.isInteger(qty)) reason = '数量が整数ではありません';
+                if (reason) {
+                    invalidImportRows.push({ rowNumber, reason, pickNo, jan, qtyRaw });
+                    return;
+                }
 
                 // Aggregate for Injection validation
                 aggregatedInject[jan] = (aggregatedInject[jan] || 0) + qty;
@@ -790,6 +979,36 @@
                 if (!groupedPick[pickNo]) groupedPick[pickNo] = [];
                 groupedPick[pickNo].push({ jan, qty, checkedQty: 0, status: 'PENDING', productLabel, productCode, productName });
             });
+
+            if (invalidImportRows.length > 0) {
+                const message = buildInvalidRowsMessage(invalidImportRows);
+                console.warn('[import-integrity] invalid rows; existing data preserved', {
+                    invalidImportRowCount: invalidImportRows.length,
+                    invalidImportRows: invalidImportRows.slice(0, 20),
+                    emptyImportRowCount
+                });
+                setImportIntegrityStatus('error', message);
+                alert(message);
+                return;
+            }
+
+            const expectedPickListCount = Object.keys(groupedPick).length;
+            const expectedLineCount = Object.values(groupedPick).reduce((total, lines) => total + lines.length, 0);
+            const expectedJanCount = Object.keys(aggregatedInject).length;
+            const expectedTotalQty = Object.values(aggregatedInject).reduce((total, qty) => total + (Number(qty) || 0), 0);
+            if (expectedPickListCount < 1 || expectedLineCount < 1 || expectedJanCount < 1 || expectedTotalQty < 1) {
+                const message = buildNoImportableDataMessage(emptyImportRowCount);
+                console.warn('[import-integrity] no importable rows; existing data preserved', {
+                    expectedPickListCount,
+                    expectedLineCount,
+                    expectedJanCount,
+                    expectedTotalQty,
+                    emptyImportRowCount
+                });
+                setImportIntegrityStatus('error', message);
+                alert(message);
+                return;
+            }
 
             const updates = {
                 injectList: aggregatedInject,
@@ -814,9 +1033,58 @@
             }
             if (needInit) updates.splits = newSplits;
 
+            const fileName = sourceFile?.name || null;
+            const startedAt = Date.now();
+            const operationId = stateMgr.createImportIntegrityOperationId();
+            const buildIntegrityState = (status, report = null, errorCode = null) => ({
+                status,
+                operationId,
+                startedByUid: stateMgr.user?.uid || null,
+                fileName,
+                expectedPickListCount,
+                expectedLineCount,
+                expectedJanCount,
+                actualPickListCount: report?.actual?.pickListCount ?? null,
+                actualLineCount: report?.actual?.lineCount ?? null,
+                actualJanCount: report?.actual?.janCount ?? null,
+                startedAt,
+                verifiedAt: status === 'processing' ? null : Date.now(),
+                errorCode,
+                missingPickListCount: report?.missingPickListCount ?? 0,
+                unexpectedPickListCount: report?.unexpectedPickListCount ?? 0,
+                mismatchedPickListCount: report?.mismatchedPickListCount ?? 0,
+                janQuantityDiffCount: report?.janQuantityDiffCount ?? 0,
+                progressSummaryValid: report?.progressSummaryValid ?? null
+            });
+
+            console.info('[import-integrity] import started', {
+                fileName,
+                expectedPickListCount,
+                expectedLineCount,
+                expectedJanCount
+            });
+            setImportIntegrityStatus('info', 'ピッキングデータを保存しています。\n画面を閉じないでください。');
+
             try {
-                await stateMgr.replaceAllPickLists(groupedPick);
-                await stateMgr.update(updates);
+                await stateMgr.beginImportIntegrityLock(buildIntegrityState('processing'));
+                await stateMgr.replaceAllPickLists(groupedPick, { operationId });
+                await stateMgr.updateIfImportOperationMatches(operationId, { ...updates, importIntegrity: buildIntegrityState('processing') });
+
+                console.info('[import-integrity] server verification started');
+                if (loadCsvBtn) loadCsvBtn.textContent = '整合性を確認中...';
+                setImportIntegrityStatus('info', '保存したデータの件数と内容を確認しています。');
+                const integrityReport = await stateMgr.verifyImportedPickingData(groupedPick, aggregatedInject);
+                if (!integrityReport.ok) {
+                    await stateMgr.updateIfImportOperationMatches(operationId, { importIntegrity: buildIntegrityState('failed', integrityReport, 'import-integrity-check-failed') });
+                    console.error('[import-integrity] verification failed', integrityReport);
+                    const error = new Error('import-integrity-check-failed');
+                    error.code = 'import-integrity-check-failed';
+                    error.integrityReport = integrityReport;
+                    throw error;
+                }
+
+                await stateMgr.updateIfImportOperationMatches(operationId, { importIntegrity: buildIntegrityState('success', integrityReport) });
+                console.info('[import-integrity] verification succeeded', integrityReport);
                 const labelWarnings = Object.entries(labelVariantsByJan)
                     .filter(([, labels]) => labels.size > 1)
                     .map(([jan, labels]) => `同一JANに複数の商品表示名があります。\nJAN: ${jan}\n${Array.from(labels).map(label => `- ${label}`).join('\n')}\n\n現在仕様ではJAN単位で集約されます。CSV内容を確認してください。`);
@@ -825,14 +1093,48 @@
                     console.warn('[inject] 同一JANに複数の商品表示名があります', labelWarnings);
                     showMessage(`⚠️ 同一JANに複数の商品表示名があります。CSV内容を確認してください。対象: ${labelWarnings.length} JAN`, 'error');
                 }
-                alert(`${Object.keys(aggregatedInject).length} 品目のデータを読み込みました。\nピッキングリスト: ${Object.keys(groupedPick).length} 件${warningText}`);
+                setImportIntegrityStatus('success', `インポートと整合性確認が完了しました。\n\nJAN：${formatNumber(expectedJanCount)}品目\nピッキングリスト：${formatNullableNumber(integrityReport.actual.pickListCount)} / ${formatNumber(integrityReport.expected.pickListCount)}件\n明細：${formatNullableNumber(integrityReport.actual.lineCount)} / ${formatNumber(integrityReport.expected.lineCount)}行`);
+                alert(`インポートと整合性確認が完了しました。\n\nJAN：${formatNumber(expectedJanCount)}品目\nピッキングリスト：${formatNumber(expectedPickListCount)}件\n明細：${formatNumber(expectedLineCount)}行${warningText}`);
             } catch (e) {
-                console.error('インポートデータの保存に失敗しました:', e);
-                alert('インポートデータの保存に失敗しました。通信状態をご確認ください。');
+                const report = e?.integrityReport || null;
+                if (report) {
+                    setImportIntegrityStatus('error', `インポートが不完全な可能性があります。\n\nピッキングリスト：${formatNullableNumber(report.actual.pickListCount)} / ${formatNumber(report.expected.pickListCount)}件\n明細：${formatNullableNumber(report.actual.lineCount)} / ${formatNumber(report.expected.lineCount)}行${buildIntegrityMismatchSummary(report)}\n\nこのデータでは作業を開始せず、\nデータをリセットして再インポートしてください。`);
+                    alert(buildFailedIntegrityMessage(report));
+                } else {
+                    if (e?.code === 'import-already-processing') {
+                        const message = buildAlreadyProcessingMessage(e.importIntegrity);
+                        setImportIntegrityStatus('info', message);
+                        alert(message);
+                        return;
+                    }
+                    if (e?.code === 'reset-already-processing') {
+                        const message = 'データリセット処理が実行中のため、インポートを開始できません。\n\nリセット完了後に再度操作してください。';
+                        setImportIntegrityStatus('info', message);
+                        alert(message);
+                        return;
+                    }
+                    if (['import-recovery-required', 'reset-recovery-required'].includes(e?.code)) {
+                        const message = '前回の処理が正常に完了していない可能性があります。\n\n安全のため、データをリセットしてから\n再度インポートしてください。';
+                        setImportIntegrityStatus('error', message);
+                        alert(message);
+                        return;
+                    }
+                    if (e?.code !== 'import-operation-mismatch') {
+                        try {
+                            await stateMgr.updateIfImportOperationMatches(operationId, { importIntegrity: buildIntegrityState('failed', null, e?.code || 'import-save-failed') });
+                        } catch (updateError) {
+                            console.error('[import-integrity] failed to persist failed status', updateError);
+                        }
+                    }
+                    setImportIntegrityStatus('error', buildServerReadFailedMessage());
+                    console.error('インポートデータの保存または確認に失敗しました:', e);
+                    alert(e?.code === 'import-integrity-server-read-failed' ? buildServerReadFailedMessage() : 'インポートデータの保存に失敗しました。通信状態をご確認ください。');
+                }
             }
         };
 
         loadCsvBtn.addEventListener('click', () => {
+            if (isImporting) return;
             if (ensureBaysReady() === null) return;
             const file = document.getElementById('csvFile').files[0];
             if (!file) return alert("ファイルを選択してください");
@@ -845,35 +1147,54 @@
                 return alert('対応形式は CSV / Excel (.xlsx, .xls) です。');
             }
 
-            const reader = new FileReader();
-            reader.onload = async (e) => {
-                if (isExcel) {
-                    if (typeof XLSX === 'undefined') {
-                        return alert('Excel読込ライブラリの読み込みに失敗しました。');
-                    }
-                    try {
-                        const workbook = XLSX.read(e.target.result, { type: 'array' });
-                        const firstSheetName = workbook.SheetNames[0];
-                        if (!firstSheetName) {
-                            return alert('Excelファイルにシートがありません。');
-                        }
-                        const firstSheet = workbook.Sheets[firstSheetName];
-                        const rows = XLSX.utils.sheet_to_json(firstSheet, {
-                            header: 1,
-                            raw: false,
-                            defval: ''
-                        });
-                        await processImportedRows(rows, format, file);
-                    } catch (err) {
-                        console.error('Excelファイルの解析に失敗しました:', err);
-                        alert('Excelファイルの読み込みに失敗しました。ファイル形式をご確認ください。');
-                    }
-                    return;
-                }
+            const originalText = loadCsvBtn.textContent;
+            isImporting = true;
+            loadCsvBtn.disabled = true;
+            loadCsvBtn.textContent = 'インポート中...';
 
-                const text = e.target.result;
-                const lines = text.split(/\r?\n/).filter(x => x.trim());
-                await processImportedRows(lines, format, file);
+            const reader = new FileReader();
+            reader.onerror = () => {
+                isImporting = false;
+                loadCsvBtn.disabled = false;
+                loadCsvBtn.textContent = originalText;
+                alert('ファイルの読み込みに失敗しました。');
+            };
+            reader.onload = async (e) => {
+                try {
+                    if (isExcel) {
+                        if (typeof XLSX === 'undefined') {
+                            alert('Excel読込ライブラリの読み込みに失敗しました。');
+                            return;
+                        }
+                        try {
+                            const workbook = XLSX.read(e.target.result, { type: 'array' });
+                            const firstSheetName = workbook.SheetNames[0];
+                            if (!firstSheetName) {
+                                alert('Excelファイルにシートがありません。');
+                                return;
+                            }
+                            const firstSheet = workbook.Sheets[firstSheetName];
+                            const rows = XLSX.utils.sheet_to_json(firstSheet, {
+                                header: 1,
+                                raw: false,
+                                defval: ''
+                            });
+                            await processImportedRows(rows, format, file);
+                        } catch (err) {
+                            console.error('Excelファイルの解析に失敗しました:', err);
+                            alert('Excelファイルの読み込みに失敗しました。ファイル形式をご確認ください。');
+                        }
+                        return;
+                    }
+
+                    const text = e.target.result;
+                    const lines = text.split(/\r?\n/).filter(x => x.trim());
+                    await processImportedRows(lines, format, file);
+                } finally {
+                    isImporting = false;
+                    loadCsvBtn.disabled = false;
+                    loadCsvBtn.textContent = originalText;
+                }
             };
             if (isExcel) {
                 reader.readAsArrayBuffer(file);
@@ -983,6 +1304,10 @@
         };
 
         importSlotLayoutBtn.addEventListener('click', async () => {
+            if (isSlotLayoutImportBlocked()) {
+                showSlotLayoutImportBlockedMessage();
+                return;
+            }
             const state = stateMgr.state;
             if (!hasPickListLoaded(state)) {
                 alert('先にピッキングリストを読込してください');
@@ -1061,6 +1386,10 @@
         });
 
         document.getElementById('slotImportPreviewProceedBtn').addEventListener('click', () => {
+            if (isSlotLayoutImportBlocked()) {
+                showSlotLayoutImportBlockedMessage();
+                return;
+            }
             if (!pendingSlotImportPreview) return;
             ensureNoInProgressWorkForSlotImport().then((ok) => {
                 if (!ok) return;
@@ -1080,6 +1409,10 @@
         });
 
         document.getElementById('slotImportConfirmApplyBtn').addEventListener('click', async () => {
+            if (isSlotLayoutImportBlocked()) {
+                showSlotLayoutImportBlockedMessage();
+                return;
+            }
             if (!pendingSlotImportPreview) return;
             const preview = pendingSlotImportPreview;
             if (preview.adoptedCount === 0) {
@@ -1103,7 +1436,8 @@
                 }
             } catch (error) {
                 console.error('間口配置の反映に失敗しました:', error);
-                alert('間口配置の更新に失敗しました。通信状態をご確認ください。');
+                const block = stateMgr.getDataOperationBlock();
+                alert(block.blocked ? block.message : '間口配置の更新に失敗しました。通信状態をご確認ください。');
             }
         });
 
@@ -1111,6 +1445,12 @@
             if (e.key !== 'Enter') return;
             e.preventDefault();
             if (scanInput.disabled) return;
+            if (stateMgr.isImportIntegrityBlocked()) {
+                AudioManager.playErrorSound();
+                showMessage(stateMgr.getImportIntegrityBlockedMessage(), 'error');
+                scanInput.value = '';
+                return;
+            }
             const jan = normalizeJan(scanInput.value);
             const state = stateMgr.state;
             const totalQty = state.injectList?.[jan];
