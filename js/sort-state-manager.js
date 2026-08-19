@@ -55,12 +55,31 @@
     batchDoc(batchId) { return this.sortBatches().doc(batchId); }
     destinationMaster() { return this.db.collection('users').doc(this.user.uid).collection('sortDestinationMaster'); }
     destinationHistory() { return this.db.collection('users').doc(this.user.uid).collection('sortDestinationMasterHistory'); }
+    destinationConfig() { return this.db.collection('users').doc(this.user.uid).collection('sortDestinationConfig').doc('current'); }
     destinationDocId(code) { return encodeURIComponent(String(code).trim()).replace(/\./g, '%2E'); }
 
     async getDestinationMaster() {
       this.ensureAuth();
       const snap = await this.destinationMaster().get();
       return snap.docs.map((d) => ({ ...d.data() })).sort((a, b) => Number(a.slotNo) - Number(b.slotNo));
+    }
+
+    async getDestinationConfig() {
+      this.ensureAuth();
+      const snap = await this.destinationConfig().get();
+      return snap.exists ? snap.data() : { maxSlotNo: 0 };
+    }
+
+    async saveDestinationConfig(maxSlotNo) {
+      this.ensureAuth();
+      const value = Number(maxSlotNo);
+      if (!Number.isInteger(value) || value < 1) throw new Error('物理配置数は1以上の整数で入力してください');
+      const entries = await this.getDestinationMaster();
+      const assignedMax = Math.max(0, ...entries.map((entry) => Number(entry.slotNo)));
+      if (value < assignedMax) throw new Error(`配置No.${String(assignedMax).padStart(3, '0')}が使用中のため、物理配置数を小さくできません`);
+      const stamp = firebase.firestore.FieldValue.serverTimestamp();
+      const actor = this.user.email || this.user.uid;
+      await this.destinationConfig().set({ maxSlotNo: value, updatedAt: stamp, updatedBy: actor }, { merge: true });
     }
 
     async saveDestinationMasterEntry(entry, options = {}) {
@@ -73,20 +92,28 @@
       if (!value.destinationCode || !value.destinationName || !Number.isInteger(value.slotNo) || value.slotNo < 1) throw new Error('入力内容を確認してください');
       // Transaction.get() は DocumentReference 専用のため、競合候補は transaction 外で特定する。
       const entries = await this.getDestinationMaster();
+      const initialMaxSlotNo = Math.max(value.slotNo, ...entries.map((entry) => Number(entry.slotNo)));
       const existing = entries.find((v) => v.destinationCode === value.destinationCode) || null;
       const occupiedEntry = entries.find((v) => v.destinationCode !== value.destinationCode && Number(v.slotNo) === value.slotNo) || null;
       if (occupiedEntry && !options.swap) throw new Error(`配置No.${String(value.slotNo).padStart(3, '0')}は「${occupiedEntry.destinationName}」が使用しています`);
       const targetRef = this.destinationMaster().doc(this.destinationDocId(value.destinationCode));
       const occupiedRef = occupiedEntry ? this.destinationMaster().doc(this.destinationDocId(occupiedEntry.destinationCode)) : null;
       await this.db.runTransaction(async (tx) => {
-        const oldSnap = await tx.get(targetRef);
-        const occupiedSnap = occupiedRef ? await tx.get(occupiedRef) : null;
+        const configRef = this.destinationConfig();
+        const [oldSnap, occupiedSnap, configSnap] = await Promise.all([
+          tx.get(targetRef),
+          occupiedRef ? tx.get(occupiedRef) : Promise.resolve(null),
+          tx.get(configRef)
+        ]);
         const old = oldSnap.exists ? oldSnap.data() : null;
         const occupied = occupiedSnap?.exists ? occupiedSnap.data() : null;
+        const configuredMax = configSnap.exists ? Number(configSnap.data().maxSlotNo) || 0 : 0;
+        if (configuredMax > 0 && value.slotNo > configuredMax) throw new Error(`配置No.${String(value.slotNo).padStart(3, '0')}は現在の物理配置数（${configuredMax}）を超えています。\n先に物理配置数を${value.slotNo}以上へ変更してください。`);
         if (!!existing !== !!old) throw new Error('マスターが別の端末で変更されました。再読み込みしてください');
         if (occupiedEntry && (!occupied || Number(occupied.slotNo) !== value.slotNo)) throw new Error('配置が別の端末で変更されました。再読み込みしてください');
         const stamp = firebase.firestore.FieldValue.serverTimestamp();
         const actor = this.user.email || this.user.uid;
+        if (configuredMax === 0) tx.set(configRef, { maxSlotNo: initialMaxSlotNo, updatedAt: stamp, updatedBy: actor }, { merge: true });
         if (occupied) {
           tx.update(occupiedRef, { slotNo: Number(old.slotNo), updatedAt: stamp, updatedBy: actor });
           tx.set(this.destinationHistory().doc(), { destinationCode: occupied.destinationCode, action: 'slot_changed', before: { slotNo: occupied.slotNo }, after: { slotNo: old.slotNo }, changedAt: stamp, changedBy: actor });
@@ -115,6 +142,7 @@
         codeSet.add(v.destinationCode);
       });
       const current = await this.getDestinationMaster();
+      const config = await this.getDestinationConfig();
       const finalByCode = new Map(current.map((v) => [v.destinationCode, { ...v }]));
       incoming.forEach((v) => finalByCode.set(v.destinationCode, v));
       const slotOwner = new Map();
@@ -123,9 +151,16 @@
         if (prior) throw new Error(`配置No.${String(v.slotNo).padStart(3, '0')} が重複しています（${prior.destinationCode} / ${v.destinationCode}）`);
         slotOwner.set(v.slotNo, v);
       });
+      const configuredMax = Number(config.maxSlotNo) || 0;
+      const finalMax = Math.max(0, ...Array.from(finalByCode.values(), (v) => Number(v.slotNo)));
+      if (configuredMax > 0 && finalMax > configuredMax) {
+        const exceeded = Array.from(finalByCode.values()).filter((v) => v.slotNo > configuredMax).map((v) => `No.${String(v.slotNo).padStart(3, '0')} ${v.destinationCode} ${v.destinationName}`).join('\n');
+        throw new Error(`取込データに物理配置数（${configuredMax}）を超える配置No.があります。${exceeded ? `\n${exceeded}` : ''}\n先に物理配置数を変更してください。`);
+      }
       const stamp = firebase.firestore.FieldValue.serverTimestamp();
       const actor = this.user.email || this.user.uid;
       const batch = this.db.batch();
+      if (configuredMax === 0 && finalMax > 0) batch.set(this.destinationConfig(), { maxSlotNo: finalMax, updatedAt: stamp, updatedBy: actor }, { merge: true });
       incoming.forEach((v) => {
         const old = current.find((x) => x.destinationCode === v.destinationCode) || null;
         const action = !old ? 'created' : old.enabled !== v.enabled ? (v.enabled ? 'enabled' : 'disabled') : Number(old.slotNo) !== v.slotNo ? 'slot_changed' : old.destinationName !== v.destinationName ? 'name_changed' : 'updated';
@@ -140,6 +175,28 @@
       const entry = entries.find((v) => v.destinationCode === code);
       if (!entry) throw new Error('仕分け先が見つかりません');
       return this.saveDestinationMasterEntry({ ...entry, enabled: false });
+    }
+
+    async deleteDestinationMasterEntry(code) {
+      this.ensureAuth();
+      const destinationCode = String(code || '').trim();
+      if (!destinationCode) throw new Error('仕分け先コードを確認してください');
+      const entries = await this.getDestinationMaster();
+      const initialMaxSlotNo = Math.max(0, ...entries.map((entry) => Number(entry.slotNo)));
+      const targetRef = this.destinationMaster().doc(this.destinationDocId(destinationCode));
+      await this.db.runTransaction(async (tx) => {
+        const configRef = this.destinationConfig();
+        const [snap, configSnap] = await Promise.all([tx.get(targetRef), tx.get(configRef)]);
+        if (!snap.exists) throw new Error('仕分け先が見つかりません');
+        const before = snap.data();
+        const stamp = firebase.firestore.FieldValue.serverTimestamp();
+        const actor = this.user.email || this.user.uid;
+        const configuredMax = configSnap.exists ? Number(configSnap.data().maxSlotNo) || 0 : 0;
+        if (configuredMax === 0 && initialMaxSlotNo > 0) tx.set(configRef, { maxSlotNo: initialMaxSlotNo, updatedAt: stamp, updatedBy: actor }, { merge: true });
+        else if (configuredMax < Number(before.slotNo)) tx.set(configRef, { maxSlotNo: Number(before.slotNo), updatedAt: stamp, updatedBy: actor }, { merge: true });
+        tx.delete(targetRef);
+        tx.set(this.destinationHistory().doc(), { destinationCode, action: 'deleted', before, after: null, changedAt: stamp, changedBy: actor });
+      });
     }
 
     unsubscribeAll() {

@@ -49,12 +49,16 @@
       const activeItemKey = st.activeItemKey;
       if (!activeItemKey || !b?.items?.[activeItemKey]) { $('current').innerHTML = 'スキャン待機中'; return; }
       const item = b.items[activeItemKey];
-      const rows = Object.values(item.allocations || {}).map((a) => {
+      const rows = Object.values(item.allocations || {}).sort((left, right) => {
+        const leftOrder = Number(b.destinations?.[left.sortSlotId]?.displayOrder) || 0;
+        const rightOrder = Number(b.destinations?.[right.sortSlotId]?.displayOrder) || 0;
+        return leftOrder - rightOrder;
+      }).map((a) => {
         const order = b.destinations?.[a.sortSlotId]?.displayOrder || 0;
         const statusDisplay = getAllocationStatusDisplay(a.status);
         return `<tr><td>No.${String(order).padStart(3, '0')}</td><td>${escapeHtml(a.destinationName)}</td><td>${a.requiredQty}個</td><td><span class="sort-status-badge ${statusDisplay.className}">${statusDisplay.label}</span></td></tr>`;
       }).join('');
-      $('current').innerHTML = `<div><strong>${escapeHtml(item.productLabel || '商品表示名未設定')}</strong></div><div>JAN: ${escapeHtml(item.jan)}</div><div>総数量: ${item.totalQty}</div><table style='width:100%;margin-top:.5rem;'><thead><tr><th>仕分け先</th><th>卸先名</th><th>数量</th><th>状態</th></tr></thead><tbody>${rows}</tbody></table>`;
+      $('current').innerHTML = `<div><strong>${escapeHtml(item.productLabel || '商品表示名未設定')}</strong></div><div>JAN: ${escapeHtml(item.jan)}</div><div>総数量: ${item.totalQty}</div><div class="sort-scan-table-wrap"><table class="sort-scan-table"><colgroup><col class="sort-scan-col-slot"><col class="sort-scan-col-destination"><col class="sort-scan-col-qty"><col class="sort-scan-col-status"></colgroup><thead><tr><th>仕分け先</th><th>卸先名</th><th>数量</th><th>状態</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     };
 
     $('scanInput').addEventListener('keydown', async (e) => {
