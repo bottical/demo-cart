@@ -2,7 +2,7 @@
   document.addEventListener('DOMContentLoaded', () => {
     const $ = (id) => document.getElementById(id);
     const mgr = new SortStateManager(() => {}, (u) => { if (!u) location.href = 'index.html'; else refresh(); });
-    let entries = []; let editing = null; let pendingImport = [];
+    let entries = []; let editing = null; let pendingImport = []; let configuredMaxSlotNo = 0;
     const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
     const no = (n) => `No.${String(n).padStart(3, '0')}`;
     const timeText = (v) => { const d = v?.toDate ? v.toDate() : v ? new Date(v) : null; return d && !Number.isNaN(d.valueOf()) ? d.toLocaleString('ja-JP') : '－'; };
@@ -11,6 +11,9 @@
     const entryMessage = (s='') => { $('entryError').textContent=s; };
     async function refresh() {
       entries = await mgr.getDestinationMaster();
+      const config = await mgr.getDestinationConfig();
+      configuredMaxSlotNo = Number(config.maxSlotNo) || 0;
+      $('maxSlotNo').value = configuredMaxSlotNo || Math.max(1, ...entries.map(v=>Number(v.slotNo)));
       const active = await mgr.getActiveBatch(); $('activeNotice').hidden = !active;
       const last = entries.reduce((a,v) => !a || timeMillis(v.updatedAt) > timeMillis(a.updatedAt) ? v:a, null);
       $('summary').textContent = `登録：${entries.length}件　有効：${entries.filter(v=>v.enabled).length}件　最終更新：${last ? timeText(last.updatedAt) : '－'}`;
@@ -18,14 +21,18 @@
     }
     function render() {
       const q = $('search').value.trim().toLowerCase();
-      const max = Math.max(0, ...entries.map(v=>Number(v.slotNo)));
+      const max = Math.max(configuredMaxSlotNo, ...entries.map(v=>Number(v.slotNo)));
       const bySlot = Object.fromEntries(entries.map(v=>[v.slotNo,v]));
       $('slotGrid').innerHTML = Array.from({length:max},(_,i)=>bySlot[i+1] ? `<button class="sort-master-slot ${bySlot[i+1].enabled?'':'is-disabled'}" data-code="${esc(bySlot[i+1].destinationCode)}"><b>${no(i+1)}</b><strong>${esc(bySlot[i+1].destinationName)}</strong><span>${esc(bySlot[i+1].destinationCode)}</span></button>` : `<div class="sort-master-slot is-vacant"><b>${no(i+1)}</b><strong>空き</strong></div>`).join('') || '<p>未登録です</p>';
-      $('masterRows').innerHTML = entries.filter(v=>!q || `${v.destinationCode} ${v.destinationName}`.toLowerCase().includes(q)).map(v=>`<tr><td>${String(v.slotNo).padStart(3,'0')}</td><td>${esc(v.destinationCode)}</td><td>${esc(v.destinationName)}</td><td>${v.enabled?'有効':'無効'}</td><td><button class="btn btn-outline edit-entry" data-code="${esc(v.destinationCode)}">編集</button> ${v.enabled?`<button class="btn btn-danger disable-entry" data-code="${esc(v.destinationCode)}">無効化</button>`:''}</td></tr>`).join('');
+      $('masterRows').innerHTML = entries.filter(v=>!q || `${v.destinationCode} ${v.destinationName}`.toLowerCase().includes(q)).map(v=>`<tr><td>${String(v.slotNo).padStart(3,'0')}</td><td>${esc(v.destinationCode)}</td><td>${esc(v.destinationName)}</td><td>${v.enabled?'有効':'無効'}</td><td><button class="btn btn-outline edit-entry" data-code="${esc(v.destinationCode)}">編集</button> ${v.enabled?`<button class="btn btn-outline disable-entry" data-code="${esc(v.destinationCode)}">無効化</button>`:''} <button class="btn btn-danger delete-entry" data-code="${esc(v.destinationCode)}">削除</button></td></tr>`).join('');
     }
     function openEntry(entry=null) { editing=entry; entryMessage(); $('dialogTitle').textContent=entry?'編集':'新規登録'; $('entryCode').value=entry?.destinationCode||''; $('entryCode').disabled=!!entry; $('entryName').value=entry?.destinationName||''; $('entrySlot').value=entry?.slotNo||''; $('entryEnabled').checked=entry?.enabled!==false; $('entryDialog').showModal(); }
     $('newBtn').onclick=()=>openEntry(); $('search').oninput=render;
-    document.addEventListener('click', async(e)=>{ const editTarget=e.target.closest('.sort-master-slot,.edit-entry'); const code=(editTarget||e.target).dataset?.code; if(editTarget) { const x=entries.find(v=>v.destinationCode===code); if(x) openEntry(x); } if(e.target.classList.contains('disable-entry')) { const x=entries.find(v=>v.destinationCode===code); if(confirm(`${x.destinationName}（${code}）を無効にします。\n\n過去バッチには影響しません。\n今後の新規バッチでは使用できなくなります。`)) { await mgr.disableDestinationMasterEntry(code); await refresh(); } } });
+    $('saveMaxSlotNo').onclick=async()=>{ const maxSlotNo=Number($('maxSlotNo').value); const configMessage=$('configMessage'); configMessage.textContent=''; if(!Number.isInteger(maxSlotNo)||maxSlotNo<1){configMessage.textContent='物理配置数は1以上の整数で入力してください';configMessage.style.color='var(--danger)';return;} try{await mgr.saveDestinationConfig(maxSlotNo);configuredMaxSlotNo=maxSlotNo;configMessage.textContent='物理配置数を保存しました';configMessage.style.color='var(--success)';render();}catch(err){configMessage.textContent=err.message;configMessage.style.color='var(--danger)';} };
+    const resetEntry = () => { editing = null; entryMessage(''); };
+    $('cancelEntry').onclick = () => { $('entryDialog').close(); resetEntry(); };
+    $('entryDialog').addEventListener('close', resetEntry);
+    document.addEventListener('click', async(e)=>{ const editTarget=e.target.closest('.sort-master-slot,.edit-entry'); const code=(editTarget||e.target).dataset?.code; if(editTarget) { const x=entries.find(v=>v.destinationCode===code); if(x) openEntry(x); } if(e.target.classList.contains('disable-entry')) { const x=entries.find(v=>v.destinationCode===code); if(confirm(`${x.destinationName}（${code}）を無効にします。\n\n過去バッチには影響しません。\n今後の新規バッチでは使用できなくなります。`)) { await mgr.disableDestinationMasterEntry(code); await refresh(); } } if(e.target.classList.contains('delete-entry')) { const x=entries.find(v=>v.destinationCode===code); if(x&&confirm(`${x.destinationName}（${code}）を仕分け先マスターから削除します。\n\n配置No.${String(x.slotNo).padStart(3,'0')}は空きになります。\n\n現在進行中および過去の仕分けバッチには影響しません。\n次回のバッチ作成からマスター未登録扱いになります。\n\nこの操作を実行しますか？`)) { await mgr.deleteDestinationMasterEntry(code); message('仕分け先マスターから削除しました'); await refresh(); } } });
     $('saveEntry').onclick=async(e)=>{ e.preventDefault(); entryMessage(); const value={destinationCode:$('entryCode').value.trim(),destinationName:$('entryName').value.trim(),slotNo:Number($('entrySlot').value),enabled:$('entryEnabled').checked}; if(!value.destinationCode||!value.destinationName||!Number.isInteger(value.slotNo)||value.slotNo<1){entryMessage('必須項目と配置No.を確認してください');return;} if(!editing&&entries.some(v=>v.destinationCode===value.destinationCode)){entryMessage('仕分け先コードが重複しています');return;} const occupant=entries.find(v=>v.destinationCode!==value.destinationCode&&Number(v.slotNo)===value.slotNo); let swap=false; if(occupant){ if(!editing){entryMessage(`${no(value.slotNo)}は「${occupant.destinationName}」が使用しています`);return;} swap=confirm(`${no(value.slotNo)}には「${occupant.destinationName}」が設定されています。\n\n${editing.destinationName} ${no(editing.slotNo)}\n${occupant.destinationName} ${no(occupant.slotNo)}\n\n配置を入れ替えますか？`); if(!swap)return;} try{await mgr.saveDestinationMasterEntry(value,{swap});$('entryDialog').close();message('保存しました');await refresh();}catch(err){entryMessage(err.message);} };
     const parseCsv=(s)=>{const out=[];let row=[],cell='',quote=false;for(let i=0;i<s.length;i++){const c=s[i];if(c==='"'){if(quote&&s[i+1]==='"'){cell+='"';i++;}else quote=!quote;}else if(c===','&&!quote){row.push(cell);cell='';}else if(/[\r\n]/.test(c)&&!quote){if(c==='\r'&&s[i+1]==='\n')i++;row.push(cell);out.push(row);row=[];cell='';}else cell+=c;}if(row.length||cell){row.push(cell);out.push(row);}return out;};
     const readCsvRows = async (file) => {
