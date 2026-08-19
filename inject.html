@@ -44,12 +44,6 @@
             color: var(--primary);
             border: 1px solid #bfdbfe;
         }
-
-        .alert.success {
-            background: #f0fdf4;
-            color: #166534;
-            border: 1px solid #bbf7d0;
-        }
     </style>
 </head>
 
@@ -113,7 +107,6 @@
                 </div>
                 <input type="file" id="csvFile" accept=".csv,.xlsx,.xls" style="font-size: 0.8rem;">
                 <button id="loadCsvBtn" class="btn btn-primary" style="width:100%;">インポート実行</button>
-                <div id="importIntegrityStatus" class="alert hidden" style="white-space: pre-line; font-size:0.9rem;"></div>
             </div>
 
             <details class="card inject-admin-tools">
@@ -246,10 +239,10 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
     <script src="js/firebase-config.js"></script>
-    <script src="js/state-manager.js?v=import-integrity-20260721c"></script>
+    <script src="js/state-manager.js?v=fix-bays-20260710a"></script>
     <script src="js/navigation-guard.js?v=fix-bays-20260710a"></script>
     <script src="js/audio-manager.js?v=fix-bays-20260710a"></script>
-    <script src="js/pages/inject.js?v=import-integrity-20260721c"></script>
+    <script src="js/pages/inject.js?v=fix-bays-20260710a"></script>
 </body>
 
 </html>
