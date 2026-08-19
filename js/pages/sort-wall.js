@@ -128,10 +128,18 @@
 
       const start = Number(localStorage.getItem('sortSlotStartIndex') || 1);
       const count = Number(localStorage.getItem('sortSlotCount') || 4);
-      const selected = Object.values(b.destinations).sort((a, c) => a.displayOrder - c.displayOrder).slice(start - 1, start - 1 + count);
+      const bySlot = new Map(Object.values(b.destinations).map((d) => [Number(d.slotNo || d.displayOrder), d]));
+      const selected = Array.from({ length: count }, (_, i) => bySlot.get(start + i) || { displayOrder: start + i, slotNo: start + i, vacant: true });
       cards.classList.toggle('is-single', selected.length === 1);
 
       selected.forEach((dest) => {
+        if (dest.vacant) {
+          const vacant = document.createElement('div');
+          vacant.className = 'sort-slot-card is-vacant';
+          vacant.innerHTML = `<div class="sort-slot-no">仕分け先 No.${String(dest.displayOrder).padStart(3, '0')}</div><div class="sort-slot-vacant-label">空き</div>`;
+          cards.appendChild(vacant);
+          return;
+        }
         const itemKey = item?.itemKey;
         const alloc = item?.allocations?.[dest.sortSlotId];
         const isDone = alloc?.status === 'done';

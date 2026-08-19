@@ -35,6 +35,12 @@
     };
 
     loadSavedColumns();
+    let masterEntries = [];
+    const loadMaster = async () => {
+      masterEntries = await mgr.getDestinationMaster();
+      $('masterEmptyNotice').hidden = masterEntries.length > 0;
+      $('importBtn').disabled = masterEntries.length === 0;
+    };
 
     $('saveColumnSettingsBtn')?.addEventListener('click', () => {
       try {
@@ -124,19 +130,20 @@
           dest: readRequiredColumn('colDest', '仕分け先名列'),
           qty: readRequiredColumn('colQty', '数量列'),
           label: readOptionalColumn('colLabel'),
-          dcode: readOptionalColumn('colDestCode')
+          dcode: readRequiredColumn('colDestCode', '仕分け先コード列')
         };
-
-        const activeBatch = await mgr.getActiveBatch();
-        if (activeBatch && !confirm('現在の卸仕分けバッチがあります。新しいCSVを取り込むと、現在の卸仕分け作業は切り替わります。続行しますか？')) return;
-        if (activeBatch) await mgr.resetAll();
 
         const rows = await readRows(file);
         const warnings = [];
         const errors = [];
         const destinations = {};
-        const destinationOrder = [];
         const items = {};
+        await loadMaster();
+        if (!masterEntries.length) throw new Error('仕分け先マスターが登録されていません');
+        const masterByCode = Object.fromEntries(masterEntries.map((v) => [v.destinationCode, v]));
+        const usedCodes = new Set();
+        const missing = new Map();
+        const disabled = new Map();
 
         for (let i = 1; i < rows.length; i += 1) {
           const r = rows[i] || [];
@@ -150,6 +157,7 @@
 
           if (!jan) rowErrors.push(`${i + 1}行目: バーコード空欄`);
           if (!destinationName) rowErrors.push(`${i + 1}行目: 仕分け先名空欄`);
+          if (!destinationCode) rowErrors.push(`${i + 1}行目: 仕分け先コード空欄`);
           if (!Number.isFinite(qty)) rowErrors.push(`${i + 1}行目: 数量が数値でない`);
           if (qty < 0) rowErrors.push(`${i + 1}行目: 数量がマイナス`);
           if (rowErrors.length) { errors.push(...rowErrors); continue; }
@@ -158,12 +166,14 @@
           if (qty === 0) warnings.push(`${i + 1}行目: 数量0`);
           if (qty <= 0) continue;
 
-          if (!destinations[destinationName]) {
-            const sortSlotId = `sortSlot${String(destinationOrder.length + 1).padStart(3, '0')}`;
-            destinationOrder.push(destinationName);
-            destinations[destinationName] = { sortSlotId, destinationCode, destinationName, displayOrder: destinationOrder.length };
-          }
-          const dest = destinations[destinationName];
+          const master = masterByCode[destinationCode];
+          if (!master) { missing.set(destinationCode, destinationName); continue; }
+          if (!master.enabled) { disabled.set(destinationCode, master.destinationName); continue; }
+          if (master.destinationName !== destinationName) warnings.push(`${destinationCode}: 入力「${destinationName}」／マスター「${master.destinationName}」— マスター登録名を使用します`);
+          const sortSlotId = `sortSlot${String(master.slotNo).padStart(3, '0')}`;
+          const dest = { sortSlotId, destinationCode, destinationName: master.destinationName, displayOrder: master.slotNo, slotNo: master.slotNo };
+          destinations[destinationCode] = dest;
+          usedCodes.add(destinationCode);
 
           const itemKey = encodeURIComponent(jan);
           if (!items[itemKey]) {
@@ -179,7 +189,7 @@
           item.totalQty += qty;
           if (!item.allocations[dest.sortSlotId]) {
             item.allocations[dest.sortSlotId] = {
-              sortSlotId: dest.sortSlotId, destinationName: dest.destinationName, requiredQty: 0, status: 'required',
+              sortSlotId: dest.sortSlotId, destinationCode, destinationName: dest.destinationName, requiredQty: 0, status: 'required',
               doneAt: null, doneByDeviceId: null, cancelCount: 0, lastUpdatedAt: null
             };
           }
@@ -187,6 +197,8 @@
         }
 
         if (errors.length) throw new Error(errors.join('\n'));
+        if (missing.size) throw new Error(`仕分け先マスターに未登録のコードがあります。\n${[...missing].map(([c,n]) => `${c} ${n}`).join('\n')}\nマスターへ登録してから再度取込してください。`);
+        if (disabled.size) throw new Error(`無効化されている仕分け先が投入データに含まれています。\n${[...disabled].map(([c,n]) => `${c} ${n}`).join('\n')}\n仕分け先マスターを確認してください。`);
         Object.values(items).forEach((item) => {
           if (item.seenLabels.length > 1) warnings.push(`JAN ${item.jan}: 同一JANに複数の商品表示名が存在`);
           item.productLabel = item.firstNonEmptyProductLabel || '';
@@ -195,10 +207,17 @@
         });
 
         const destinationMap = {};
-        Object.values(destinations).forEach((d) => { destinationMap[d.sortSlotId] = d; });
+        masterEntries.filter((v) => v.enabled).forEach((v) => {
+          const sortSlotId = `sortSlot${String(v.slotNo).padStart(3, '0')}`;
+          destinationMap[sortSlotId] = { sortSlotId, destinationCode: v.destinationCode, destinationName: v.destinationName, displayOrder: v.slotNo, slotNo: v.slotNo };
+        });
         const batchName = file.name;
         const totalQty = Object.values(items).reduce((a, b) => a + b.totalQty, 0);
-        await mgr.createBatch({
+        // 全検証とプレビュー生成が完了するまで、稼働中バッチには一切触れない。
+        preview.textContent = `仕分け先照合結果\nマスター登録：${destinationMap ? Object.keys(destinationMap).length : 0}件\n今回対象：${usedCodes.size}件\n今回投入なし：${Object.keys(destinationMap).length - usedCodes.size}件\n未登録：0件`;
+        const activeBatch = await mgr.getActiveBatch();
+        if (activeBatch && !confirm('現在の卸仕分けバッチがあります。検証済みの新しいバッチへ切り替えますか？')) return;
+        await mgr.replaceActiveBatch({
           batchName, sourceFileName: file.name,
           destinationCount: Object.keys(destinationMap).length,
           itemCount: Object.keys(items).length,
@@ -213,7 +232,7 @@
         warningsPreview.textContent = warnings.length
           ? `${visibleWarnings.join('\n')}${hiddenWarningCount > 0 ? `\nほか${hiddenWarningCount}件` : ''}`
           : '警告はありません';
-        preview.textContent = `バッチ名: ${batchName}\nSKU数: ${Object.keys(items).length}\n仕分け先数: ${Object.keys(destinationMap).length}\n総数量: ${totalQty}\n警告件数: ${warnings.length}\n${Object.values(destinationMap).map((d) => `No.${String(d.displayOrder).padStart(3, '0')} ${d.destinationName}`).join('\n')}`;
+        preview.textContent = `バッチ名: ${batchName}\nSKU数: ${Object.keys(items).length}\n総数量: ${totalQty}\n\n仕分け先照合結果\nマスター登録：${Object.keys(destinationMap).length}件\n今回対象：${usedCodes.size}件\n今回投入なし：${Object.keys(destinationMap).length - usedCodes.size}件\n未登録：0件\n${Object.values(destinationMap).sort((a,b) => a.displayOrder-b.displayOrder).map((d) => `No.${String(d.displayOrder).padStart(3, '0')} ${d.destinationName}　${usedCodes.has(d.destinationCode) ? '対象' : '今回投入なし'}`).join('\n')}`;
         setMessage('取込完了（列設定を保存しました）');
       } catch (e) {
         setMessage(e.message, 'var(--danger)');
@@ -225,5 +244,6 @@
       await mgr.resetAll();
       alert('卸仕分けデータをリセットしました');
     };
+    const waitForAuth = setInterval(() => { if (mgr.user) { clearInterval(waitForAuth); loadMaster().catch((e) => setMessage(e.message, 'var(--danger)')); } }, 100);
   });
 })();
