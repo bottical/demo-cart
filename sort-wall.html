@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0f172a">
   <title>仕分け先表示</title>
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="css/style.css?v=sort-wall-mobile-20260819b">
+  <link rel="stylesheet" href="css/style.css?v=sort-wall-layout-20260819">
 </head>
 <body class="sort-wall sort-wall-mode">
   <div class="sort-wall-root">
@@ -42,6 +42,13 @@
               <option>L</option>
             </select>
           </label>
+          <label class="sort-wall-field" for="layoutDirection">
+            <span>並び方向</span>
+            <select id="layoutDirection">
+              <option value="horizontal">横並び</option>
+              <option value="vertical">縦並び</option>
+            </select>
+          </label>
           <div class="sort-wall-setting-actions">
             <button id="save" class="btn btn-primary" type="button">端末設定保存</button>
           </div>
@@ -74,6 +81,6 @@
       ? 'standalone'
       : 'browser';
   </script>
-  <script src="js/pages/sort-wall.js?v=sort-wall-mobile-20260819a"></script>
+  <script src="js/pages/sort-wall.js?v=sort-wall-layout-20260819"></script>
 </body>
 </html>

@@ -1297,11 +1297,19 @@ body.sort-wall-mode[data-sort-scale="l"] .sort-slot-qty {
 
     .sort-wall-cards,
     .sort-slot-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
         grid-auto-rows: minmax(140px, 1fr);
         gap: 0.4rem;
         overflow-y: auto;
         overscroll-behavior: contain;
+    }
+
+    .sort-slot-grid,
+    body.sort-wall-mode[data-sort-layout="horizontal"] .sort-wall-cards {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    body.sort-wall-mode[data-sort-layout="vertical"] .sort-wall-cards {
+        grid-template-columns: 1fr;
     }
 
     .sort-wall-cards.is-single {

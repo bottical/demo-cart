@@ -52,6 +52,7 @@
     const escapeHtml = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     const getSortColor = (displayOrder) => SORT_COLORS[(Math.max(1, Number(displayOrder || 1)) - 1) % SORT_COLORS.length];
     const getDisplayScale = () => localStorage.getItem('sortDisplayScale') || 'M';
+    const getLayoutDirection = () => localStorage.getItem('sortLayoutDirection') || 'horizontal';
 
     $('toggleCfg').onclick = () => {
       const isOpen = $('cfgWrap').classList.toggle('open');
@@ -61,12 +62,15 @@
     $('start').value = localStorage.getItem('sortSlotStartIndex') || 1;
     $('count').value = localStorage.getItem('sortSlotCount') || 4;
     $('scale').value = getDisplayScale();
+    $('layoutDirection').value = getLayoutDirection();
     document.body.dataset.sortScale = getDisplayScale().toLowerCase();
+    document.body.dataset.sortLayout = getLayoutDirection();
 
     $('save').onclick = () => {
       localStorage.setItem('sortSlotStartIndex', $('start').value);
       localStorage.setItem('sortSlotCount', $('count').value);
       localStorage.setItem('sortDisplayScale', $('scale').value);
+      localStorage.setItem('sortLayoutDirection', $('layoutDirection').value);
       location.reload();
     };
 
