@@ -11,15 +11,22 @@
         const pickListSourceName = document.getElementById('pickListSourceName');
         const pickListSourceMeta = document.getElementById('pickListSourceMeta');
         const resetBtn = document.getElementById('resetBtn');
+        const systemOperationStatus = document.getElementById('systemOperationStatus');
         let isStateReady = false;
         const updateResetButtonState = () => {
             if (!resetBtn) return;
-            resetBtn.disabled = !isStateReady;
-            resetBtn.title = isStateReady
-                ? ''
-                : '状態を読み込み中です。少し待ってから操作してください。';
-            resetBtn.style.opacity = isStateReady ? '1' : '0.45';
-            resetBtn.style.cursor = isStateReady ? 'pointer' : 'not-allowed';
+            const importProcessing = stateMgr?.isActiveImportIntegrityProcessing?.() || false;
+            const systemOperation = stateMgr?.state?.systemOperation || null;
+            const activeSystemOperation = stateMgr?._isActiveSystemOperation?.(systemOperation) || false;
+            const enabled = isStateReady && !importProcessing && !activeSystemOperation;
+            resetBtn.disabled = !enabled;
+            resetBtn.title = importProcessing || activeSystemOperation
+                ? (systemOperation?.type === 'RESET'
+                    ? 'データリセット処理中です。完了するまで操作しないでください。'
+                    : 'ピッキングデータを取り込み中のため、データをリセットできません。')
+                : (isStateReady ? '' : '状態を読み込み中です。少し待ってから操作してください。');
+            resetBtn.style.opacity = enabled ? '1' : '0.45';
+            resetBtn.style.cursor = enabled ? 'pointer' : 'not-allowed';
         };
 
         const updatePickListSourceUi = (state) => {
@@ -47,11 +54,20 @@
                 : '';
         };
 
+        const updateSystemOperationUi = () => {
+            if (!systemOperationStatus) return;
+            const block = stateMgr?.getDataOperationBlock?.() || { blocked: false };
+            const isResetBlock = block.code?.startsWith('reset-');
+            systemOperationStatus.classList.toggle('hidden', !isResetBlock);
+            systemOperationStatus.textContent = isResetBlock ? block.message : '';
+        };
+
         const stateMgr = new StateManager(
             (state) => {
                 isStateReady = !!(state && state.config);
                 updateResetButtonState();
                 updatePickListSourceUi(state);
+                updateSystemOperationUi();
             },
             (user) => {
                 document.getElementById('loader')?.classList.add('hidden');
@@ -69,6 +85,7 @@
                     isStateReady = false;
                     updateResetButtonState();
                     updatePickListSourceUi(null);
+                    updateSystemOperationUi();
                 }
             }
         );
@@ -91,6 +108,12 @@
 
         document.querySelectorAll('.menu-item').forEach(item => {
             item.addEventListener('click', () => {
+                const block = stateMgr.getDataOperationBlock();
+                const allowWhileBlocked = item.dataset.allowWhileBlocked === 'true';
+                if (block.blocked && !allowWhileBlocked) {
+                    alert(block.message);
+                    return;
+                }
                 const page = item.getAttribute('data-page');
                 openPage(page);
             });
@@ -101,6 +124,11 @@
         resetBtn?.addEventListener('click', async () => {
             if (!isStateReady || !stateMgr.state || !stateMgr.state.config) {
                 alert("状態を読み込み中です。少し待ってから再度リセットしてください。");
+                return;
+            }
+            if (stateMgr.isActiveImportIntegrityProcessing()) {
+                alert(stateMgr._buildImportProcessingResetBlockedError().message);
+                updateResetButtonState();
                 return;
             }
 
