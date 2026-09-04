@@ -2,7 +2,52 @@
   document.addEventListener('DOMContentLoaded', () => {
     const $ = (id) => document.getElementById(id);
     let snapshot = null;
-    const mgr = new SortStateManager((s) => { snapshot = s; render(); focus(); }, (u) => { if (!u) location.href = 'index.html'; });
+
+    const handleAudioTransitions = (previousSnapshot, nextSnapshot) => {
+      const previousBatch = previousSnapshot?.batch;
+      const nextBatch = nextSnapshot?.batch;
+      const previousState = previousSnapshot?.sortState || {};
+      const nextState = nextSnapshot?.sortState || {};
+      const previousBatchId = previousBatch?.id || previousState.activeBatchId;
+      const nextBatchId = nextBatch?.id || nextState.activeBatchId;
+      const itemKey = nextState.activeItemKey;
+
+      // 初回表示、バッチ切替、SKU切替では現在の状態を比較用baselineとして扱う。
+      if (!previousSnapshot || !previousBatchId || previousBatchId !== nextBatchId ||
+          !itemKey || previousState.activeItemKey !== itemKey) return;
+
+      const previousItem = previousBatch?.items?.[itemKey];
+      const nextItem = nextBatch?.items?.[itemKey];
+      if (!previousItem || !nextItem) return;
+
+      let completed = false;
+      let reopened = false;
+      const previousAllocations = previousItem.allocations || {};
+      Object.entries(nextItem.allocations || {}).forEach(([allocationKey, allocation]) => {
+        const previousStatus = previousAllocations[allocationKey]?.status;
+        if (previousStatus === 'required' && allocation.status === 'done') completed = true;
+        if (previousStatus === 'done' && allocation.status === 'required') reopened = true;
+      });
+
+      // 取消と完了が同時に届いた場合は、状態が戻ったことを知らせる警告を優先する。
+      if (reopened) {
+        window.AudioManager?.playErrorSound?.();
+        return;
+      }
+      if (completed) {
+        const skuJustCompleted = previousItem.status !== 'completed' && nextItem.status === 'completed';
+        if (skuJustCompleted) window.AudioManager?.playCompleteSound?.();
+        else window.AudioManager?.playStartSound?.();
+      }
+    };
+
+    const mgr = new SortStateManager((nextSnapshot) => {
+      const previousSnapshot = snapshot;
+      snapshot = nextSnapshot;
+      handleAudioTransitions(previousSnapshot, nextSnapshot);
+      render();
+      focus();
+    }, (u) => { if (!u) location.href = 'index.html'; });
 
     const focus = () => setTimeout(() => $('scanInput').focus(), 20);
     const csvEscape = (v) => {
@@ -66,21 +111,38 @@
       const jan = e.target.value.trim();
       e.target.value = '';
 
-      const b = await mgr.getActiveBatch();
-      if (!b) { $('err').textContent = '先に卸仕分けCSVを取り込んでください'; focus(); return; }
-      const itemKey = encodeURIComponent(jan);
-      if (!b.items?.[itemKey]) { $('err').textContent = '未登録JANです'; window.AudioManager?.playErrorSound?.(); focus(); return; }
+      try {
+        const b = await mgr.getActiveBatch();
+        if (!b) {
+          $('err').textContent = '先に卸仕分けCSVを取り込んでください';
+          window.AudioManager?.playErrorSound?.();
+          focus();
+          return;
+        }
+        const itemKey = encodeURIComponent(jan);
+        const item = b.items?.[itemKey];
+        if (!item) { $('err').textContent = '未登録JANです'; window.AudioManager?.playErrorSound?.(); focus(); return; }
 
-      const st = snapshot?.sortState || {};
-      const prevKey = st.activeItemKey;
-      const prev = prevKey && b.items?.[prevKey] ? summarize(b.items[prevKey], b) : null;
-      const allocs = Object.values(b.items[itemKey].allocations || {}).filter((x) => (x.requiredQty || 0) > 0);
-      const done = allocs.filter((x) => x.status === 'done').length;
-      const nextStatus = done === allocs.length ? 'completed' : (done > 0 ? 'partial' : 'active');
-      await mgr.batchDoc(b.id).update({ [`items.${itemKey}.status`]: nextStatus, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
-      await mgr.setActiveSku(itemKey, jan, prev);
-      $('err').textContent = '';
-      focus();
+        if (item.status === 'completed') window.AudioManager?.playErrorSound?.();
+        else if ((Number(item.totalQty) || 0) > 1) window.AudioManager?.playMultipleStartSound?.();
+        else window.AudioManager?.playStartSound?.();
+
+        const st = snapshot?.sortState || {};
+        const prevKey = st.activeItemKey;
+        const prev = prevKey && b.items?.[prevKey] ? summarize(b.items[prevKey], b) : null;
+        const allocs = Object.values(item.allocations || {}).filter((x) => (x.requiredQty || 0) > 0);
+        const done = allocs.filter((x) => x.status === 'done').length;
+        const nextStatus = done === allocs.length ? 'completed' : (done > 0 ? 'partial' : 'active');
+        await mgr.batchDoc(b.id).update({ [`items.${itemKey}.status`]: nextStatus, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+        await mgr.setActiveSku(itemKey, jan, prev);
+        $('err').textContent = '';
+        focus();
+      } catch (error) {
+        console.error('SKU scan synchronization failed', error);
+        $('err').textContent = 'SKUの同期に失敗しました。通信状態を確認して再度スキャンしてください';
+        window.AudioManager?.playErrorSound?.();
+        focus();
+      }
     });
 
     $('dlBtn').onclick = async () => {
